@@ -294,29 +294,37 @@
     <parent link="flange"/>
     <child link="tool0"/>
   </joint>
-  <!-- The wrist camera bracket, framed like tool0 on the face that seats on the flange. The
-       mesh's CAD origin is 6.4 mm behind that face, and the CAD puts its dowel hole at 112.5
-       degrees, so turning the mesh 7/8 pi lines that hole up with the flange's, which is on
-       tool0's -Y. The mesh is in millimetres. -->
+  <!-- The wrist camera bracket frame-->
   <link name="wrist_bracket">
     <visual>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
-        <mesh filename="../assets/wrist_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="../assets/wrist_bracket_arm.stl"/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
+      <geometry>
+        <mesh filename="../assets/wrist_bracket_camera_plate.stl"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
-        <mesh filename="../assets/wrist_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="../assets/wrist_bracket_arm.stl"/>
       </geometry>
     </collision>
-    <!-- The mesh's 201 cm3 printed solid in PLA, 1240 kg/m3. For another plastic, scale the mass
-         and inertia by the ratio of its density. -->
+    <collision>
+      <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
+      <geometry>
+        <mesh filename="../assets/wrist_bracket_camera_plate.stl"/>
+      </geometry>
+    </collision>
+    <!-- The mass is estimated based on the density of PLA -->
     <inertial>
-      <mass value="0.249"/>
-      <origin rpy="0 0 0" xyz="-0.0143 -0.0344 0.0096"/>
-      <inertia ixx="8.454e-04" ixy="-2.957e-04" ixz="2.166e-05" iyy="2.539e-04" iyz="5.232e-05" izz="1.051e-03"/>
+      <mass value="0.250"/>
+      <origin rpy="0 0 0" xyz="-0.0144 -0.0346 0.0095"/>
+      <inertia ixx="8.458e-04" ixy="-2.959e-04" ixz="2.143e-05" iyy="2.538e-04" iyz="5.177e-05" izz="1.051e-03"/>
     </inertial>
   </link>
   <joint name="tool0-wrist_bracket" type="fixed">
@@ -330,17 +338,15 @@
     <visual>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
-        <mesh filename="../assets/wrist_camera.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="../assets/orbbec_gemini_336.stl"/>
       </geometry>
     </visual>
     <collision>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
-        <mesh filename="../assets/wrist_camera.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="../assets/orbbec_gemini_336.stl"/>
       </geometry>
     </collision>
-    <!-- Orbbec's 99 g, spread evenly through the 90 x 30.7 x 25 mm housing, which leans 22.5
-         degrees in towards the tool axis. -->
     <inertial>
       <mass value="0.099"/>
       <origin rpy="0 0 0" xyz="-0.0552 -0.1332 0.0516"/>
@@ -352,8 +358,6 @@
     <child link="wrist_camera"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
   </joint>
-  <!-- The bracket's top face repeats the flange's ISO 9409-1-50-4-M6 pattern for the gripper,
-       turned 22.5 degrees from it. Like tool0, this frame has the dowel hole on -Y. -->
   <link name="gripper_mount"/>
   <joint name="wrist_bracket-gripper_mount" type="fixed">
     <parent link="wrist_bracket"/>
