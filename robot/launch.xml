@@ -9,11 +9,14 @@
   <arg name="rviz" default="false" description="Start RViz showing the arm and gripper"/>
   <arg name="headless_mode" default="true"
        description="Send the driver's program on connect, which needs the robot in Remote Control mode; false to play External Control on the pendant in Local mode"/>
+  <arg name="hand_guiding" default="true"
+       description="Start hand-guiding: while its button is held, the arm is in freedrive and the throttle opens the gripper"/>
   <!-- Here, as below the includes $(dirname) would be the last included file's. -->
   <let name="ur_overrides" value="$(dirname)/ur_overrides.yaml"/>
   <let name="gripper_controllers" value="$(dirname)/gripper_controllers.yaml"/>
   <let name="gripper_xacro" value="$(dirname)/gripper.urdf.xacro"/>
   <let name="rviz_config" value="$(dirname)/view.rviz"/>
+  <let name="hand_guiding_bin" value="$(dirname)/../target/release/hand-guiding"/>
 
   <include file="$(find-pkg-share ur_robot_driver)/launch/ur_control.launch.py">
     <arg name="ur_type" value="ur12e"/>
@@ -42,6 +45,10 @@
   </include>
 
   <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_config)" if="$(var rviz)"/>
+
+  <!-- Respawned because on starting it hands the arm back from freedrive, should it have died mid-press. -->
+  <executable cmd="$(var hand_guiding_bin)" output="screen" respawn="true" respawn_delay="2.0"
+              if="$(var hand_guiding)"/>
 
   <!-- Gives the UR driver time to create /tmp/ttyUR, which the gripper's driver opens. -->
   <timer period="3.0">

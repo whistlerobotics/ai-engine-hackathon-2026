@@ -12,9 +12,8 @@ base64.workspace = true
 clap = { workspace = true, features = ["derive"] }
 color-eyre.workspace = true
 ctrlc.workspace = true
-imagesize.workspace = true
-nalgebra.workspace = true
 parking_lot.workspace = true
+policy-contract.workspace = true
 ratatui.workspace = true
 rclrs.workspace = true
 roxmltree.workspace = true

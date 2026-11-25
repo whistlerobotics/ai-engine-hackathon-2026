@@ -1,19 +1,19 @@
 use crate::{
     app::{Command, Phase, Shared},
     episode::Episode,
-    kinematics::Joints,
     policy::Policy,
     ros::Ros,
 };
 use color_eyre::{Result, eyre::bail};
+use policy_contract::Joints;
 use std::{
     sync::{atomic::Ordering, mpsc::Receiver},
     thread,
     time::{Duration, Instant},
 };
 
-/// Captured from the real arm on 2026-11-20; not the contract's example pose.
-pub const START_POSE: Joints = [-1.6262, -1.6024, -2.7163, -2.0559, -0.1211, -1.6580];
+/// Captured from the real arm on 2026-11-25; not the contract's example pose.
+pub const START_POSE: Joints = [-3.1477, -1.6507, -2.4943, -0.6170, 1.4267, -4.5194];
 /// Half a turn takes 10 s, as every move to the start pose used to.
 const START_SPEED: f64 = std::f64::consts::PI / 10.0;
 const MIN_START_MOVE: Duration = Duration::from_secs(1);

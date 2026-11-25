@@ -1,9 +1,10 @@
 use crate::{
     app::{App, Phase, Robot},
-    episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEP, STEPS},
+    episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEPS},
     gripper::GripperHardware,
     policy::{ACT_TIMEOUT, Health, Readiness},
 };
+use policy_contract::STEP;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},

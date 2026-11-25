@@ -1,13 +1,16 @@
 use crate::{
-    kinematics::{self, Joints},
-    policy::{ActError, ActRequest, Action, Images, Policy, Proprio, SCHEMA_VERSION},
-    ros::{FINGER_CLOSED, Received, Ros},
+    policy::{ActError, Policy},
+    ros::{Received, Ros},
 };
 use color_eyre::{
     Result,
     eyre::{self, bail, eyre},
 };
 use parking_lot::Mutex;
+use policy_contract::{
+    Joints, SCHEMA_VERSION, STEP, gripper, kinematics,
+    wire::{ActRequest, Action, Images, Proprio},
+};
 use std::{
     fmt,
     sync::atomic::{AtomicBool, Ordering},
@@ -15,7 +18,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const STEP: Duration = Duration::from_millis(50);
 pub const STEPS: u32 = 300;
 pub const BUDGET: Duration = Duration::from_secs(30);
 pub const MAX_TRACKING_ERROR: f64 = 0.25;
@@ -198,8 +200,7 @@ impl<'a> Episode<'a> {
                     self.ros.send_steps(&self.q_cmd, &targets, STEP)?;
                     self.q_cmd = q;
                 }
-                self.ros
-                    .command_finger((1.0 - action.gripper) * FINGER_CLOSED)?;
+                self.ros.command_finger(gripper::finger(action.gripper))?;
                 self.counts.steps += 1;
                 self.publish(|progress| progress.counts = self.counts);
             }
@@ -277,7 +278,7 @@ impl<'a> Episode<'a> {
         Ok(Proprio {
             joint_pos: position,
             joint_vel: arm.value.velocity,
-            gripper: (1.0 - finger.value / FINGER_CLOSED).clamp(0.0, 1.0),
+            gripper: gripper::opening(finger.value),
             ee_pos: palm.position,
             ee_quat: palm.orientation,
         })

@@ -58,3 +58,27 @@ mise run policy-runner -- --task <task_id> --policy <url> --camera /camera/color
 By default `real-robot` sends the driver's program on connect, which needs the arm in Remote Control
 mode; with `headless_mode:=false`, play External Control on the pendant in Local mode instead. It
 also starts the Gemini 336 unless given `camera:=false`.
+
+### Hand guiding
+
+`mock-robot` and `real-robot` also start hand-guiding, unless given `hand_guiding:=false`. While the
+button on the arm's digital input 0 is held, the arm is in freedrive, to be moved by hand, and the
+throttle on analog input 1 opens the gripper: released closes it, pressed fully opens it. Releasing
+the button hands the arm back to `joint_trajectory_controller`, which holds it where it is.
+
+Don't press the button during a policy episode: hand-guiding takes the arm and the gripper from the
+policy runner.
+
+### Recording demonstrations
+
+With `real-robot` running:
+
+```bash
+mise run record -- --task <task_id>
+```
+
+Each press of the hand-guiding button records an episode; releasing it saves the episode to
+`recording/<task_id>/<episode_id>.json`. An episode also ends, and is saved, after `--max-duration`
+seconds (at most and by default 60), or as soon as the arm, gripper or camera reading goes stale.
+With `--permissive`, a stale camera frame is recorded as a black frame and a stale gripper reading
+as `null` instead; a stale arm still ends the episode. `ended_by` in each file says why it ended.

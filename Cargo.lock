@@ -590,7 +590,7 @@ dependencies = [
  "mio",
  "parking_lot",
  "rustix",
- "signal-hook",
+ "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
 ]
@@ -1056,6 +1056,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hand-guiding"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "ctrlc",
+ "parking_lot",
+ "policy-contract",
+ "rclrs",
+ "ros-env",
+ "test-case",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1274,6 +1288,58 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "107f2e89536b6818514025f6787b0d94d819e54fe3b40365275fc753de485b3f"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "windows-link",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d44c923edf2bf456a982253f1a9ee1f6e89e421dffd0065d9b9a581da0def58f"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4996f71e569e3a3e32b925c28ef8f0027dc30bb1d594b33eeda409eea185f5c8"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc65b284afcfa8f6cf189c7274c805505314a7ab975c60e1f548bff56525420e"
+dependencies = [
+ "jiff-tzdb",
+]
 
 [[package]]
 name = "js-sys"
@@ -1871,6 +1937,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "policy-contract"
+version = "0.1.0"
+dependencies = [
+ "imagesize",
+ "nalgebra",
+ "serde",
+ "serde_json",
+ "test-case",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "policy-runner"
 version = "0.1.0"
 dependencies = [
@@ -1878,9 +1956,8 @@ dependencies = [
  "clap",
  "color-eyre",
  "ctrlc",
- "imagesize",
- "nalgebra",
  "parking_lot",
+ "policy-contract",
  "ratatui",
  "rclrs",
  "ros-env",
@@ -1911,6 +1988,15 @@ name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "potential_utf"
@@ -2108,6 +2194,25 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
+]
+
+[[package]]
+name = "record"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "clap",
+ "color-eyre",
+ "jiff",
+ "parking_lot",
+ "policy-contract",
+ "rclrs",
+ "ros-env",
+ "serde",
+ "serde_json",
+ "signal-hook 0.4.6",
+ "test-case",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2343,6 +2448,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-mio"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,7 +2465,7 @@ checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
 dependencies = [
  "libc",
  "mio",
- "signal-hook",
+ "signal-hook 0.3.18",
 ]
 
 [[package]]
@@ -2498,7 +2613,7 @@ dependencies = [
  "bitflags 2.13.2",
  "parking_lot",
  "rustix",
- "signal-hook",
+ "signal-hook 0.3.18",
  "windows-sys",
 ]
 
@@ -2549,7 +2664,7 @@ dependencies = [
  "pest_derive",
  "phf",
  "sha2",
- "signal-hook",
+ "signal-hook 0.3.18",
  "siphasher",
  "terminfo",
  "termios",

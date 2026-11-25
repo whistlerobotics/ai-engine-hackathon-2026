@@ -1,7 +1,15 @@
-use crate::{gripper::GripperHardware, kinematics::Joints, log::Log};
+use crate::{gripper::GripperHardware, log::Log};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::{
+    Result,
+    eyre::{bail, eyre},
+};
 use parking_lot::Mutex;
+use policy_contract::{
+    ARM_JOINTS, Joints,
+    gripper::FINGER_JOINT,
+    image::{BLACK_JPEG, check_jpeg},
+};
 use rclrs::{
     Context, CreateBasicExecutor, IntoPrimitiveOptions, Node, Publisher, SpinOptions, Subscription,
 };
@@ -17,25 +25,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// In the contract's order.
-pub const ARM_JOINTS: [&str; 6] = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-];
-const FINGER_JOINT: &str = "finger_joint";
-pub const FINGER_CLOSED: f64 = 0.695;
-
 const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scaling";
 const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";
 const FINGER_COMMAND_TOPIC: &str = "/gripper/finger_position_controller/commands";
-
-const BLACK_JPEG: &[u8] = include_bytes!("../assets/black.jpg");
-const IMAGE_SIZE: (usize, usize) = (640, 480);
 
 #[derive(Debug, Clone)]
 pub struct Received<T> {
@@ -210,7 +203,11 @@ impl Ros {
             Camera::Black { base64 } => Ok(base64.clone()),
             Camera::Topic(frame) => {
                 let frame = latest(frame).ok_or_else(|| eyre!("no camera frame received yet"))?;
-                check_frame(&frame.value, frame.at.elapsed())?;
+                let age = frame.at.elapsed();
+                if age > STALE_AFTER {
+                    bail!("the latest camera frame is {} ms old", age.as_millis());
+                }
+                check_jpeg(&frame.value)?;
                 Ok(BASE64.encode(&frame.value))
             }
         }
@@ -274,34 +271,7 @@ impl Ros {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum FrameError {
-    #[error("the latest camera frame is {} ms old", .0.as_millis())]
-    Stale(Duration),
-    #[error("the camera frame is not a JPEG")]
-    NotJpeg,
-    #[error("the camera frame is {width}×{height}, not {}×{}", IMAGE_SIZE.0, IMAGE_SIZE.1)]
-    WrongSize { width: usize, height: usize },
-}
-
 const STALE_AFTER: Duration = Duration::from_millis(100);
-
-fn check_frame(jpeg: &[u8], age: Duration) -> Result<(), FrameError> {
-    if age > STALE_AFTER {
-        return Err(FrameError::Stale(age));
-    }
-    if !matches!(imagesize::image_type(jpeg), Ok(imagesize::ImageType::Jpeg)) {
-        return Err(FrameError::NotJpeg);
-    }
-    let size = imagesize::blob_size(jpeg).map_err(|_| FrameError::NotJpeg)?;
-    if (size.width, size.height) != IMAGE_SIZE {
-        return Err(FrameError::WrongSize {
-            width: size.width,
-            height: size.height,
-        });
-    }
-    Ok(())
-}
 
 fn by_name<const N: usize>(
     names: &[String],
@@ -352,24 +322,9 @@ fn ros_duration(duration: Duration) -> RosDuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use policy_contract::ARM_JOINTS;
     use std::assert_matches;
     use test_case::test_case;
-
-    /// Just enough of a JPEG for its size to be read: start of image, then a baseline frame
-    /// header for a 1280×800, three-component image.
-    const JPEG_1280X800: &[u8] = &[
-        0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x03, 0x20, 0x05, 0x00, 0x03, 0x01, 0x22, 0x00,
-        0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9,
-    ];
-    const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-
-    #[test_case(BLACK_JPEG, 10 => Ok(()); "valid frame")]
-    #[test_case(BLACK_JPEG, 150 => Err(FrameError::Stale(Duration::from_millis(150))); "stale frame")]
-    #[test_case(PNG_SIGNATURE, 10 => Err(FrameError::NotJpeg); "not a JPEG")]
-    #[test_case(JPEG_1280X800, 10 => Err(FrameError::WrongSize { width: 1280, height: 800 }); "wrong size")]
-    fn frame_checks(jpeg: &[u8], age_ms: u64) -> Result<(), FrameError> {
-        check_frame(jpeg, Duration::from_millis(age_ms))
-    }
 
     #[test_case(&[[0.25; 6]] => vec![[0.5; 6]])]
     #[test_case(&[[0.25; 6], [0.75; 6]] => vec![[0.5; 6], [1.0; 6]])]

@@ -1,0 +1,18 @@
+[package]
+name = "policy-contract"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+imagesize.workspace = true
+nalgebra.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true

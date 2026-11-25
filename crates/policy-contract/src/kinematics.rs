@@ -1,8 +1,6 @@
+use crate::Joints;
 use nalgebra::{Isometry3, Matrix3, Rotation3, Translation3, UnitQuaternion, Vector3};
 use std::f64::consts::{FRAC_PI_2, PI};
-
-/// Joint positions in the contract's order: shoulder pan, shoulder lift, elbow, wrist 1, 2, 3.
-pub type Joints = [f64; 6];
 
 struct DhLink {
     d: f64,
@@ -57,6 +55,7 @@ pub struct PalmPose {
 }
 
 /// The palm's pose in `base_link`, which is the DH base (`base`) turned 180° about z.
+#[must_use]
 pub fn palm_pose(joints: &Joints) -> PalmPose {
     let base_link_to_base = Isometry3::from_parts(
         Translation3::identity(),

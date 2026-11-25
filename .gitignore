@@ -1,4 +1,5 @@
 /target
+/recording/
 .venv/
 __pycache__/
 mise.local.toml

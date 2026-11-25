@@ -1,0 +1,20 @@
+[package]
+name = "hand-guiding"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+color-eyre.workspace = true
+ctrlc = { workspace = true, features = ["termination"] }
+parking_lot.workspace = true
+policy-contract.workspace = true
+rclrs.workspace = true
+ros-env.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
