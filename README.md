@@ -1,7 +1,12 @@
-# AI Engine Hackathon
+# Policy Runner for the AI Engine Reality Check Hackathon
 
-Runs a policy, served over HTTP, on a UR12e with a Robotiq 2F-140 gripper and an Orbbec Gemini 336
-camera. The policy's API is in [API.md](API.md).
+28–29 November 2026, London
+
+Check the [hackathon website](https://www.aiengine.build/reality-check-hack) for more details.
+
+This repo contains a policy runner and ROS 2 stack configuration for the hackathon test stand: a
+UR12e with a Robotiq 2F-140 gripper and an Orbbec Gemini 336 camera. The policy's API is in
+[API.md](API.md).
 
 ## Devcontainer setup
 

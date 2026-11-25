@@ -1,5 +1,6 @@
 mod app;
 mod episode;
+mod gripper;
 mod kinematics;
 mod log;
 mod policy;

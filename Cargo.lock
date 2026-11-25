@@ -1884,6 +1884,7 @@ dependencies = [
  "ratatui",
  "rclrs",
  "ros-env",
+ "roxmltree",
  "serde",
  "serde_json",
  "test-case",
@@ -2166,6 +2167,15 @@ checksum = "76f1c3a806380f367275768d7fcd71a19d74af71183e304ca96264043399a544"
 dependencies = [
  "cfg-if",
  "rustflags",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

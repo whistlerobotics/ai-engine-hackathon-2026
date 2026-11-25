@@ -14,7 +14,9 @@ use std::{
 
 /// Captured from the real arm on 2026-11-20; not the contract's example pose.
 pub const START_POSE: Joints = [-1.6262, -1.6024, -2.7163, -2.0559, -0.1211, -1.6580];
-const START_MOVE: Duration = Duration::from_secs(10);
+/// Half a turn takes 10 s, as every move to the start pose used to.
+const START_SPEED: f64 = std::f64::consts::PI / 10.0;
+const MIN_START_MOVE: Duration = Duration::from_secs(1);
 
 /// Carries out the operator's commands until the sender is dropped. Returns an error, ending
 /// the runner, when the arm may not be holding.
@@ -51,16 +53,33 @@ pub fn serve(
     Ok(())
 }
 
+/// The largest joint error from `position` to the start pose, in radians.
+pub fn distance_to_start(position: &Joints) -> f64 {
+    position
+        .iter()
+        .zip(START_POSE)
+        .map(|(q, s)| (q - s).abs())
+        .fold(0.0, f64::max)
+}
+
+fn start_move(from: &Joints) -> Duration {
+    Duration::from_secs_f64(distance_to_start(from) / START_SPEED).max(MIN_START_MOVE)
+}
+
 /// Moves the arm slowly to the start pose. Returns false if the operator aborted, after making
 /// the arm hold.
 fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
+    let Some(arm) = ros.arm() else {
+        bail!("no joint state from the arm")
+    };
+    let duration = start_move(&arm.value.position);
     shared.log.push(format!(
-        "Moving to the start pose over {} s.",
-        START_MOVE.as_secs()
+        "Moving to the start pose over {:.1} s.",
+        duration.as_secs_f64()
     ));
-    ros.send_trajectory(&[START_POSE], START_MOVE)?;
+    ros.send_trajectory(&[START_POSE], duration)?;
 
-    let arrival = Instant::now() + START_MOVE + Duration::from_millis(500);
+    let arrival = Instant::now() + duration + Duration::from_millis(500);
     while Instant::now() < arrival {
         if shared.cancel.load(Ordering::Relaxed) {
             if let Some(arm) = ros.arm() {
@@ -75,15 +94,28 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
     let Some(arm) = ros.arm() else {
         bail!("no joint state from the arm")
     };
-    let error = arm
-        .value
-        .position
-        .iter()
-        .zip(START_POSE)
-        .map(|(q, s)| (q - s).abs())
-        .fold(0.0, f64::max);
+    let error = distance_to_start(&arm.value.position);
     shared
         .log
         .push(format!("At the start pose, within {error:.4} rad."));
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+    use test_case::test_case;
+
+    fn offset(joint: usize, by: f64) -> Joints {
+        let mut position = START_POSE;
+        position[joint] += by;
+        position
+    }
+
+    #[test_case(START_POSE => MIN_START_MOVE; "already there")]
+    #[test_case(offset(5, -2.0 * PI) => Duration::from_secs(20); "full turn backwards")]
+    fn start_move_scales_with_distance(from: Joints) -> Duration {
+        start_move(&from)
+    }
 }

@@ -1,6 +1,7 @@
 use crate::{
     app::{App, Phase, Robot},
     episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEP, STEPS},
+    gripper::GripperHardware,
     policy::{ACT_TIMEOUT, Health, Readiness},
 };
 use ratatui::{
@@ -15,7 +16,7 @@ use std::time::Duration;
 pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
     let [header, middle, log, footer] = Layout::vertical([
         Constraint::Length(4),
-        Constraint::Length(8),
+        Constraint::Length(9),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -114,11 +115,28 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
     } else {
         Span::raw("✗ away")
     };
+    let setting = |name: &str, value: String| Line::from(format!("{name:<12}{value}"));
+    let (grip_speed, grip_force) = match robot.gripper_hardware {
+        None => ("–".to_owned(), "–".to_owned()),
+        Some(GripperHardware::Other) => ("– mock".to_owned(), "– mock".to_owned()),
+        Some(GripperHardware::Robotiq {
+            speed_multiplier,
+            force,
+        }) => (format!("{speed_multiplier:.2}×"), format!("{force:.1} N")),
+    };
     let lines = vec![
         live("Arm", robot.arm_live),
         live("Gripper", robot.gripper_live),
         camera,
         Line::from(vec![Span::raw(format!("{:<12}", "Start pose")), start_pose]),
+        setting(
+            "Arm speed",
+            robot
+                .speed_scaling
+                .map_or_else(|| "–".to_owned(), |percent| format!("{percent:.0} %")),
+        ),
+        setting("Grip speed", grip_speed),
+        setting("Grip force", grip_force),
     ];
     frame.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(" Robot ")),
@@ -318,6 +336,8 @@ mod tests {
         gripper_live: true,
         camera_live: None,
         at_start: false,
+        speed_scaling: Some(100.0),
+        gripper_hardware: None,
     };
 
     fn screen(shared: &Shared, camera: Option<&str>, robot: Robot) -> Vec<String> {
@@ -400,6 +420,32 @@ mod tests {
         assert!(shows(&screen, "Arm         ● stale"), "{screen:#?}");
         assert!(shows(&screen, "Gripper     ● live"), "{screen:#?}");
         assert!(shows(&screen, "Camera      ● live"), "{screen:#?}");
+    }
+
+    #[test_case(None, None => ["Arm speed   –", "Grip speed  –", "Grip force  –"]; "nothing received")]
+    #[test_case(Some(100.0), Some(GripperHardware::Other)
+        => ["Arm speed   100 %", "Grip speed  – mock", "Grip force  – mock"]; "mock")]
+    #[test_case(Some(30.0), Some(GripperHardware::Robotiq { speed_multiplier: 1.0, force: 117.5 })
+        => ["Arm speed   30 %", "Grip speed  1.00×", "Grip force  117.5 N"]; "real")]
+    fn speeds_and_force(
+        speed_scaling: Option<f64>,
+        gripper_hardware: Option<GripperHardware>,
+    ) -> [String; 3] {
+        let robot = Robot {
+            speed_scaling,
+            gripper_hardware,
+            ..LIVE
+        };
+        let screen = screen(&shared(), None, robot);
+        ["Arm speed", "Grip speed", "Grip force"].map(|name| {
+            screen
+                .iter()
+                .find_map(|row| {
+                    let start = row.find(name)?;
+                    Some(row[start..].split('│').next()?.trim_end().to_owned())
+                })
+                .unwrap_or_default()
+        })
     }
 
     #[test]

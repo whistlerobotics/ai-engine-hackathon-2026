@@ -1,4 +1,4 @@
-use crate::{kinematics::Joints, log::Log};
+use crate::{gripper::GripperHardware, kinematics::Joints, log::Log};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use color_eyre::{Result, eyre::eyre};
 use parking_lot::Mutex;
@@ -8,7 +8,7 @@ use rclrs::{
 use ros_env::{
     builtin_interfaces::msg::Duration as RosDuration,
     sensor_msgs::msg::{CompressedImage, JointState},
-    std_msgs::msg::Float64MultiArray,
+    std_msgs::msg::{Float64, Float64MultiArray, String as StringMsg},
     trajectory_msgs::msg::{JointTrajectory, JointTrajectoryPoint},
 };
 use std::{
@@ -29,6 +29,8 @@ pub const ARM_JOINTS: [&str; 6] = [
 const FINGER_JOINT: &str = "finger_joint";
 pub const FINGER_CLOSED: f64 = 0.695;
 
+const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scaling";
+const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";
 const FINGER_COMMAND_TOPIC: &str = "/gripper/finger_position_controller/commands";
 
@@ -58,6 +60,9 @@ type Latest<T> = Arc<Mutex<Option<Received<T>>>>;
 pub struct Ros {
     arm: Latest<ArmState>,
     finger: Latest<f64>,
+    /// The pendant's speed slider, in percent.
+    speed_scaling: Latest<f64>,
+    gripper_hardware: Arc<Mutex<Option<GripperHardware>>>,
     camera: Camera,
     trajectory: Publisher<JointTrajectory>,
     finger_command: Publisher<Float64MultiArray>,
@@ -74,6 +79,8 @@ enum Camera {
 struct Subscriptions {
     _arm: Subscription<JointState>,
     _finger: Subscription<JointState>,
+    _speed_scaling: Subscription<Float64>,
+    _gripper_description: Subscription<StringMsg>,
     _camera: Option<Subscription<CompressedImage>>,
 }
 
@@ -104,6 +111,24 @@ impl Ros {
                 }
             }
         })?;
+
+        let speed_scaling = Latest::default();
+        let speed_scaling_subscription = node.create_subscription(SPEED_SCALING_TOPIC, {
+            let speed_scaling = Arc::clone(&speed_scaling);
+            move |msg: Float64| store(&speed_scaling, msg.data)
+        })?;
+
+        let gripper_hardware: Arc<Mutex<Option<GripperHardware>>> = Arc::default();
+        // `robot_state_publisher` publishes the description once, transient local.
+        let gripper_description_subscription =
+            node.create_subscription(GRIPPER_DESCRIPTION_TOPIC.transient_local().keep_last(1), {
+                let gripper_hardware = Arc::clone(&gripper_hardware);
+                let log = Arc::clone(&log);
+                move |msg: StringMsg| match GripperHardware::from_description(&msg.data) {
+                    Ok(hardware) => *gripper_hardware.lock() = Some(hardware),
+                    Err(error) => log.push(error.to_string()),
+                }
+            })?;
 
         let (camera, camera_subscription) = match camera_topic {
             None => (
@@ -136,12 +161,16 @@ impl Ros {
         Ok(Self {
             arm,
             finger,
+            speed_scaling,
+            gripper_hardware,
             camera,
             trajectory,
             finger_command,
             _subscriptions: Subscriptions {
                 _arm: arm_subscription,
                 _finger: finger_subscription,
+                _speed_scaling: speed_scaling_subscription,
+                _gripper_description: gripper_description_subscription,
                 _camera: camera_subscription,
             },
             _node: node,
@@ -155,6 +184,15 @@ impl Ros {
 
     pub fn finger(&self) -> Option<Received<f64>> {
         latest(&self.finger)
+    }
+
+    pub fn speed_scaling(&self) -> Option<Received<f64>> {
+        latest(&self.speed_scaling)
+    }
+
+    /// None until the gripper's robot description arrives.
+    pub fn gripper_hardware(&self) -> Option<GripperHardware> {
+        *self.gripper_hardware.lock()
     }
 
     /// Whether the camera's latest frame is fresh; None without a camera topic.
