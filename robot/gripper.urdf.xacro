@@ -14,12 +14,15 @@
 
   <!-- The bracket and camera CAD share an origin 6.4 mm behind the face that seats on the flange,
        and turning it 7/8 pi puts the bracket's dowel hole on the flange's, on tool0's -Y. -->
-  <xacro:macro name="cad_part" params="mesh">
+  <xacro:macro name="cad_part" params="mesh material:=''">
     <visual>
       <origin xyz="0 0 -0.0064" rpy="0 0 ${7 * pi / 8}"/>
       <geometry>
         <mesh filename="${assets}/${mesh}"/>
       </geometry>
+      <xacro:if value="${material != ''}">
+        <material name="${material}"/>
+      </xacro:if>
     </visual>
     <collision>
       <origin xyz="0 0 -0.0064" rpy="0 0 ${7 * pi / 8}"/>
@@ -29,11 +32,15 @@
     </collision>
   </xacro:macro>
 
+  <material name="purple">
+    <color rgba="0.5 0.2 0.75 1"/>
+  </material>
+
   <link name="tool0"/>
 
   <link name="wrist_bracket">
-    <xacro:cad_part mesh="wrist_bracket_arm.stl"/>
-    <xacro:cad_part mesh="wrist_bracket_camera_plate.stl"/>
+    <xacro:cad_part mesh="wrist_bracket_arm.stl" material="purple"/>
+    <xacro:cad_part mesh="wrist_bracket_camera_plate.stl" material="purple"/>
     <xacro:cad_part mesh="orbbec_gemini_336.stl"/>
     <!-- The PLA bracket, 250 g from its 201 cm3, and Orbbec's 99 g camera spread evenly through its
          90 x 30 x 25 mm housing. For another plastic, scale the bracket's share by its density. -->
