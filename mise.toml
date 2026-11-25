@@ -1,5 +1,7 @@
 [env]
-_.python.venv = { path = ".venv", create = true, uv_create_args = ["--python", "/usr/bin/python3"] }
+# Activating the venv puts its python3 first on PATH, so ROS's `#!/usr/bin/env python3` scripts run on
+# it, like the UR driver's tool_communication.py; they need the apt-installed packages beside ROS.
+_.python.venv = { path = ".venv", create = true, uv_create_args = ["--python", "/usr/bin/python3", "--system-site-packages"] }
 
 [tasks.mock-robot]
 description = "UR12e and 2F-140 on mock hardware; takes camera:=true to add the Gemini 336, rviz:=true"
@@ -7,7 +9,7 @@ dir = "{{config_root}}/robot"
 run = "ros2 launch launch.xml robot:=mock"
 
 [tasks.real-robot]
-description = "UR12e, 2F-140 and Gemini 336; takes robot_ip:=<address> (default 192.168.56.101), camera:=false, rviz:=true, headless_mode:=false"
+description = "UR12e, 2F-140 and Gemini 336; takes robot_ip:=<address> (default 192.168.56.101), camera:=false, rviz:=true, headless_mode:=false, freedrive:=true"
 dir = "{{config_root}}/robot"
 run = "ros2 launch launch.xml robot:=real"
 
@@ -18,6 +20,10 @@ run = "python3 test-policy.py"
 [tasks.policy-runner]
 description = "The policy runner; takes --task <task_id>, and --policy <url>, --camera <topic>"
 run = "cargo run --release -p policy-runner --"
+
+[tasks.record]
+description = "Record demonstrations trajectories"
+run = "uv run record.py"
 
 [tasks."python:sync"]
 description = "Install the Python dev tools into .venv"

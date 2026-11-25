@@ -9,6 +9,10 @@
   <arg name="rviz" default="false" description="Start RViz showing the arm and gripper"/>
   <arg name="headless_mode" default="true"
        description="Send the driver's program on connect, which needs the robot in Remote Control mode; false to play External Control on the pendant in Local mode"/>
+  <arg name="freedrive" default="false"
+       description="deactive the joint_trajectory_controller, and activate the freedrive_mode_controller"/>
+  <let name="joint_controller"
+       value="$(eval '\'freedrive_mode_controller\' if \'$(var freedrive)\'.lower() == \'true\' else \'joint_trajectory_controller\'')"/>
   <!-- Here, as below the includes $(dirname) would be the last included file's. -->
   <let name="ur_overrides" value="$(dirname)/ur_overrides.yaml"/>
   <let name="gripper_controllers" value="$(dirname)/gripper_controllers.yaml"/>
@@ -22,7 +26,7 @@
     <arg name="headless_mode" value="$(var headless_mode)"/>
     <arg name="update_rate_config_file" value="$(var ur_overrides)"/>
     <!-- Kilted's joint_trajectory_controller follows the speed slider itself; the scaled one is deprecated and gone in Lyrical. -->
-    <arg name="initial_joint_controller" value="joint_trajectory_controller"/>
+    <arg name="initial_joint_controller" value="$(var joint_controller)"/>
     <arg name="use_tool_communication" value="$(var real)"/>
     <!-- The 2F-140 runs on 24 V from the wrist connector. -->
     <arg name="tool_voltage" value="24"/>
@@ -42,6 +46,10 @@
   </include>
 
   <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_config)" if="$(var rviz)"/>
+
+  <!-- freedrive_mode_controller ends freedrive after its inactive_timeout, 1 s, without a message. -->
+  <executable cmd="ros2 topic pub --rate 5 --print 0 /freedrive_mode_controller/enable_freedrive_mode std_msgs/msg/Bool '{data: true}'"
+              if="$(var freedrive)"/>
 
   <!-- Gives the UR driver time to create /tmp/ttyUR, which the gripper's driver opens. -->
   <timer period="3.0">

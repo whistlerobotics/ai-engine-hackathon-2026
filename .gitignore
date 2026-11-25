@@ -3,3 +3,4 @@
 __pycache__/
 mise.local.toml
 .claude/settings.local.json
+/recording/
