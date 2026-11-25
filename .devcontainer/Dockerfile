@@ -29,8 +29,8 @@ RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         python-is-python3 \
-        bash-completion git-lfs iproute2 iputils-ping jq mise ninja-build nmap rustup usbutils \
-        vim zstd \
+        bash-completion ffmpeg git-lfs iproute2 iputils-ping jq mise ninja-build nmap rustup \
+        usbutils vim zstd \
         ros-${ROS_DISTRO}-launch ros-${ROS_DISTRO}-ur ros-${ROS_DISTRO}-ros2-control \
         ros-${ROS_DISTRO}-ros2-controllers ros-${ROS_DISTRO}-rviz2 ros-${ROS_DISTRO}-xacro \
         # rclrs vendors these interface packages and links them unconditionally

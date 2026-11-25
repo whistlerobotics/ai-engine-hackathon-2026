@@ -56,10 +56,20 @@ enum State {
         since: Instant,
         reported: bool,
     },
-    Recording {
-        episode: Episode,
-        next_step_at: Instant,
-    },
+    Recording(Recording),
+}
+
+struct Recording {
+    episode: Episode,
+    next_step_at: Instant,
+}
+
+/// What lasts the whole session.
+struct Recorder {
+    ros: Ros,
+    args: Args,
+    max_steps: usize,
+    saved: usize,
 }
 
 fn main() -> Result<()> {
@@ -73,26 +83,30 @@ fn main() -> Result<()> {
         signal_hook::flag::register_usize(number, Arc::clone(&signal), usize::try_from(number)?)?;
     }
 
-    let ros = Ros::new()?;
-    let started = Instant::now();
-    let mut reported_silent = false;
-    let mut state = State::WaitingForRelease;
-    let mut saved = 0;
     println!(
         "Hold the hand-guiding button to record an episode of {}; release it to save. Ctrl-C to quit.",
         args.task
     );
+    let mut recorder = Recorder {
+        ros: Ros::new()?,
+        args,
+        max_steps,
+        saved: 0,
+    };
+    let started = Instant::now();
+    let mut reported_silent = false;
+    let mut state = State::WaitingForRelease;
 
     let stopped_by = loop {
         let now = Instant::now();
         if let Some(name) = signal_name(signal.load(Ordering::Relaxed)) {
-            if let State::Recording { episode, .. } = state {
-                saved += usize::from(finish(&episode, &args, &End::Signal(name)));
+            if let State::Recording(recording) = state {
+                recorder.finish(&recording.episode, &End::Signal(name));
             }
             break name;
         }
 
-        let hand_guiding = ros.hand_guiding(now);
+        let hand_guiding = recorder.ros.hand_guiding(now);
         let silent = hand_guiding.is_none();
         if now - started > STARTUP_GRACE && silent != reported_silent {
             reported_silent = silent;
@@ -113,36 +127,24 @@ fn main() -> Result<()> {
                 println!("Released before the gripper was commanded: no episode.");
                 State::WaitingForRelease
             }
-            State::Starting { since, reported } => start(&ros, &args, since, reported, now),
-            State::Recording {
-                mut episode,
-                mut next_step_at,
-            } => match record(
-                &ros,
-                &args,
-                &mut episode,
-                &mut next_step_at,
-                hand_guiding,
-                max_steps,
-                now,
-            ) {
-                None => State::Recording {
-                    episode,
-                    next_step_at,
-                },
-                Some(end) => {
-                    saved += usize::from(finish(&episode, &args, &end));
-                    if end == End::Release {
-                        State::Idle
-                    } else {
-                        State::WaitingForRelease
+            State::Starting { since, reported } => recorder.start(since, reported, now),
+            State::Recording(mut recording) => {
+                match recorder.record(&mut recording, hand_guiding, now) {
+                    None => State::Recording(recording),
+                    Some(end) => {
+                        recorder.finish(&recording.episode, &end);
+                        if end == End::Release {
+                            State::Idle
+                        } else {
+                            State::WaitingForRelease
+                        }
                     }
                 }
-            },
+            }
             unchanged @ (State::WaitingForRelease | State::Idle) => unchanged,
         };
 
-        let pause = if matches!(state, State::Recording { .. }) {
+        let pause = if matches!(state, State::Recording(_)) {
             Duration::from_millis(2)
         } else {
             Duration::from_millis(10)
@@ -150,109 +152,116 @@ fn main() -> Result<()> {
         thread::sleep(pause);
     };
 
-    println!("\nStopped: {stopped_by}. {saved} episode(s) saved this session.");
+    println!(
+        "\nStopped: {stopped_by}. {} episode(s) saved this session.",
+        recorder.saved
+    );
     Ok(())
 }
 
-fn start(ros: &Ros, args: &Args, since: Instant, reported: bool, now: Instant) -> State {
-    let Some(command) = ros.finger_command().filter(|command| command.at >= since) else {
-        if !reported && now - since > COMMAND_WAIT {
-            println!("Waiting for hand-guiding to command the gripper: is the throttle all right?");
-        }
-        return State::Starting {
-            since,
-            reported: reported || now - since > COMMAND_WAIT,
+impl Recorder {
+    fn start(&self, since: Instant, reported: bool, now: Instant) -> State {
+        let Some(command) = self
+            .ros
+            .finger_command()
+            .filter(|command| command.at >= since)
+        else {
+            if !reported && now - since > COMMAND_WAIT {
+                println!(
+                    "Waiting for hand-guiding to command the gripper: is the throttle all right?"
+                );
+            }
+            return State::Starting {
+                since,
+                reported: reported || now - since > COMMAND_WAIT,
+            };
         };
-    };
-    match observe(ros, now, args.permissive) {
-        Ok(observation) => {
-            let mut episode = Episode::new(&args.task, now);
-            episode.add_step(now, observation, command.value);
-            println!("Recording {}. Release to stop.", episode.id);
-            State::Recording {
-                episode,
-                next_step_at: now + STEP,
+        match observe(&self.ros, now, self.args.permissive) {
+            Ok(observation) => {
+                let mut episode = Episode::new(&self.args.task, now);
+                episode.add_step(now, observation, command.value);
+                println!("Recording {}. Release to stop.", episode.id);
+                State::Recording(Recording {
+                    episode,
+                    next_step_at: now + STEP,
+                })
+            }
+            Err(stale) => {
+                println!("Not starting: {stale}. Release and press again.");
+                State::WaitingForRelease
             }
         }
-        Err(stale) => {
-            println!("Not starting: {stale}. Release and press again.");
-            State::WaitingForRelease
+    }
+
+    /// Records the next step when it is due; returns why the episode ended, if it has.
+    fn record(
+        &self,
+        recording: &mut Recording,
+        hand_guiding: Option<HandGuiding>,
+        now: Instant,
+    ) -> Option<End> {
+        match hand_guiding {
+            Some(HandGuiding::Guiding) => {}
+            Some(HandGuiding::Idle) => return Some(End::Release),
+            None => return Some(End::HandGuidingStopped),
+        }
+        if now < recording.next_step_at {
+            return None;
+        }
+        let observation = match observe(&self.ros, now, self.args.permissive) {
+            Ok(observation) => observation,
+            Err(stale) => return Some(End::Stale(stale)),
+        };
+        // Step 0 waited for a command, so there is one, if perhaps from before the throttle started
+        // reading out of range: the gripper holds it meanwhile.
+        let Some(command) = self.ros.finger_command() else {
+            return Some(End::HandGuidingStopped);
+        };
+        recording.episode.add_step(now, observation, command.value);
+
+        recording.next_step_at += STEP;
+        if now - recording.next_step_at > STEP {
+            recording.next_step_at = now + STEP;
+        }
+        let steps = recording.episode.steps.len();
+        if steps.is_multiple_of(20) {
+            println!("  step {steps} ({:.0} s)", duration(steps).as_secs_f64());
+        }
+        (steps >= self.max_steps).then_some(End::TimeLimit)
+    }
+
+    /// Saves `episode` and says so.
+    fn finish(&mut self, episode: &Episode, end: &End) {
+        let ended_by = end.to_string();
+        match file::save(episode, &self.args.out_dir, &ended_by) {
+            Ok(path) => {
+                let steps = episode.steps.len();
+                let mut details = vec![format!("{:.2} s", duration(steps).as_secs_f64())];
+                if episode.steps_without_image > 0 {
+                    details.push(format!(
+                        "{} without a camera frame",
+                        episode.steps_without_image
+                    ));
+                }
+                if *end != End::Release {
+                    details.push(format!("ended by {ended_by}"));
+                }
+                println!(
+                    "Saved {steps} steps ({}) to {}",
+                    details.join(", "),
+                    path.display()
+                );
+                self.saved += 1;
+            }
+            Err(error) => {
+                eprintln!("Saving {} failed: {error:#}", episode.id);
+            }
         }
     }
-}
-
-/// Records the next step when it is due; returns why the episode ended, if it has.
-fn record(
-    ros: &Ros,
-    args: &Args,
-    episode: &mut Episode,
-    next_step_at: &mut Instant,
-    hand_guiding: Option<HandGuiding>,
-    max_steps: usize,
-    now: Instant,
-) -> Option<End> {
-    match hand_guiding {
-        Some(HandGuiding::Guiding) => {}
-        Some(HandGuiding::Idle) => return Some(End::Release),
-        None => return Some(End::HandGuidingStopped),
-    }
-    if now < *next_step_at {
-        return None;
-    }
-    let observation = match observe(ros, now, args.permissive) {
-        Ok(observation) => observation,
-        Err(stale) => return Some(End::Stale(stale)),
-    };
-    // Step 0 waited for a command, so there is one, if perhaps from before the throttle started
-    // reading out of range: the gripper holds it meanwhile.
-    let Some(command) = ros.finger_command() else {
-        return Some(End::HandGuidingStopped);
-    };
-    episode.add_step(now, observation, command.value);
-
-    *next_step_at += STEP;
-    if now - *next_step_at > STEP {
-        *next_step_at = now + STEP;
-    }
-    let steps = episode.steps.len();
-    if steps.is_multiple_of(20) {
-        println!("  step {steps} ({:.0} s)", duration(steps).as_secs_f64());
-    }
-    (steps >= max_steps).then_some(End::TimeLimit)
 }
 
 fn duration(steps: usize) -> Duration {
     STEP * u32::try_from(steps).unwrap_or(u32::MAX)
-}
-
-/// Saves `episode` and says so; returns whether it was saved.
-fn finish(episode: &Episode, args: &Args, end: &End) -> bool {
-    let ended_by = end.to_string();
-    match file::save(episode, &args.out_dir, &ended_by) {
-        Ok(path) => {
-            let steps = episode.steps.len();
-            let mut details = vec![format!("{:.2} s", duration(steps).as_secs_f64())];
-            if episode.steps_without_image > 0 {
-                details.push(format!(
-                    "{} without a camera frame",
-                    episode.steps_without_image
-                ));
-            }
-            if *end != End::Release {
-                details.push(format!("ended by {ended_by}"));
-            }
-            println!(
-                "Saved {steps} steps ({}) to {}",
-                details.join(", "),
-                path.display()
-            );
-            true
-        }
-        Err(error) => {
-            eprintln!("Saving {} failed: {error:#}", episode.id);
-            false
-        }
-    }
 }
 
 fn signal_name(number: usize) -> Option<&'static str> {

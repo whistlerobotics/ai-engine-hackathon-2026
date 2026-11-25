@@ -45,8 +45,13 @@ mise run policy-runner -- --task <task_id>
 
 `mock-robot` brings up the UR12e and the gripper on mock hardware. `test-policy` serves a stand-in
 policy on port 8000; `mise run test-policy -- --help` lists the replies it can send, including late,
-chunked and invalid ones. The policy runner is a terminal UI that runs episodes of the policy
-against the arm; it sends a black frame unless given `--camera <topic>`.
+chunked and invalid ones.
+
+`mise run test-policy -- --replay recording/<task_id>/<episode_id>.json` plays back a recorded
+episode's motion and gripper instead, relative to wherever the arm starts.
+
+Thepolicy runner is a terminal UI that runs episodes of the policy against the arm; it sends a black
+frame unless given `--camera <topic>`.
 
 ### On the real robot
 
@@ -82,3 +87,6 @@ Each press of the hand-guiding button records an episode; releasing it saves the
 seconds (at most and by default 60), or as soon as the arm, gripper or camera reading goes stale.
 With `--permissive`, a stale camera frame is recorded as a black frame and a stale gripper reading
 as `null` instead; a stale arm still ends the episode. `ended_by` in each file says why it ended.
+
+`mise run extract-video recording/<task_id>/<episode_id>.json …` turns each episode's camera frames
+into `recording/<task_id>/<episode_id>.mp4`.

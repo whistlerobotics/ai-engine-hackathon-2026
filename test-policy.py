@@ -3,8 +3,9 @@
 It swings the chosen joints sinusoidally about the start pose, by default only the wrists by
 ±0.1 rad over 5 s, opening and closing the gripper every 5 s. With --offset it instead moves the palm
 by an offset in `base_link` and back, keeping its orientation, with the gripper open on the way
-there and closing on arrival to carry what it picked back. It can be told to reply late, in
-chunks, or invalidly, to exercise the runner.
+there and closing on arrival to carry what it picked back. With --replay it plays back a
+recorded episode's joint motion and gripper commands, open loop from wherever the arm starts. It
+can be told to reply late, in chunks, or invalidly, to exercise the runner.
 """
 
 import argparse
@@ -21,6 +22,7 @@ from typing import Any, override
 Reply = dict[str, Any]
 
 PERIOD_STEPS = 100
+STEP_S = 0.05
 MAX_DELTA = 0.05
 # The largest delta of a sine sampled PERIOD_STEPS times per cycle is 2·sin(π/PERIOD_STEPS) times
 # its amplitude, and every delta must stay within the contract's MAX_DELTA.
@@ -222,6 +224,44 @@ class PalmPath:
         }
 
 
+class Replay:
+    """The joint deltas and gripper commands of an episode saved by `mise run record`, then holding
+    still once the recording runs out."""
+
+    def __init__(self, path: Path) -> None:
+        steps = json.loads(path.read_text())["steps"]
+        self.start: Joints = steps[0]["proprio"]["joint_pos"]
+        self.grippers: list[float] = [step["gripper_command"] for step in steps]
+        self.deltas: list[Joints] = []
+        # A step the arm moved more than MAX_DELTA in is spread over the following ones, so that
+        # the replay still ends where the recording did.
+        commanded = list(self.start)
+        for step in steps[1:]:
+            self.deltas.append(self.step_towards(commanded, step["proprio"]["joint_pos"]))
+        self.recorded_steps: int = len(self.deltas)
+        end = steps[-1]["proprio"]["joint_pos"]
+        while any(abs(e - c) > 1e-6 for e, c in zip(end, commanded, strict=True)):
+            self.deltas.append(self.step_towards(commanded, end))
+
+    @staticmethod
+    def step_towards(commanded: Joints, target: Joints) -> Joints:
+        delta = [
+            round(max(-MAX_DELTA, min(MAX_DELTA, t - c)), 6)
+            for t, c in zip(target, commanded, strict=True)
+        ]
+        commanded[:] = [c + d for c, d in zip(commanded, delta, strict=True)]
+        return delta
+
+    def delta(self, step: int) -> Reply:
+        if step >= len(self.deltas):
+            return {"type": "joint_delta", "values": [0.0] * 6, "gripper": self.grippers[-1]}
+        return {
+            "type": "joint_delta",
+            "values": self.deltas[step],
+            "gripper": self.grippers[min(step + 1, len(self.grippers) - 1)],
+        }
+
+
 def offset_arg(text: str) -> list[float]:
     values = [float(v) for v in text.split(",")]
     if len(values) != 3:
@@ -250,11 +290,35 @@ class Policy:
         self.seen: set[tuple[str, int]] = set()
         self.lock: threading.Lock = threading.Lock()
         self.paths: dict[str, PalmPath] = {}
+        self.replay: Replay | None = None
+        self.replayed_episode: str | None = None
+        if args.replay is not None:
+            self.replay = Replay(args.replay)
+            recorded, total = self.replay.recorded_steps, len(self.replay.deltas)
+            print(
+                f"Replaying {args.replay}: {recorded} steps, {total * STEP_S:.2f} s with catch-up"
+            )
 
     def ready(self) -> bool:
         return time.monotonic() >= self.ready_at
 
+    def replay_delta(self, replay: Replay, request: Reply, step: int) -> Reply:
+        episode_id = request["episode_id"]
+        with self.lock:
+            if self.replayed_episode != episode_id:
+                self.replayed_episode = episode_id
+                mismatch = max(
+                    abs(a - b)
+                    for a, b in zip(request["proprio"]["joint_pos"], replay.start, strict=True)
+                )
+                print(
+                    f"Episode {episode_id}: starting {mismatch:.4f} rad from the recording's start"
+                )
+        return replay.delta(step)
+
     def joint_delta(self, request: Reply, step: int) -> Reply:
+        if self.replay is not None:
+            return self.replay_delta(self.replay, request, step)
         if self.args.offset is None:
             return joint_delta(step, self.args.amplitude, self.args.joints)
         episode_id = request["episode_id"]
@@ -372,6 +436,11 @@ def main() -> None:
         type=offset_arg,
         help="X,Y,Z metres in base_link: move the palm by this and back instead of swinging joints",
     )
+    _ = parser.add_argument(
+        "--replay",
+        type=Path,
+        help="an episode from recording/: replay its motion and gripper commands instead",
+    )
     _ = parser.add_argument("--delay", type=float, default=5.0, help="ms before every reply")
     _ = parser.add_argument(
         "--slow-every", type=int, default=0, help="delay the first reply to every N-th step"
@@ -386,6 +455,8 @@ def main() -> None:
     _ = parser.add_argument("--log-requests", action="store_true", help="print each /act call")
     _ = parser.add_argument("--save-image", help="write the last received image to this file")
     args = parser.parse_args()
+    if args.replay is not None and args.offset is not None:
+        parser.error("--replay and --offset are alternatives")
 
     Handler.policy = Policy(args)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

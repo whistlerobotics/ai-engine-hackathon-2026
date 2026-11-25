@@ -18,8 +18,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const STEPS: u32 = 300;
-pub const BUDGET: Duration = Duration::from_secs(30);
+pub const STEPS: u32 = 900;
+pub const BUDGET: Duration = Duration::from_secs(60);
 pub const MAX_TRACKING_ERROR: f64 = 0.25;
 /// How often a sleep checks for Ctrl-C and the budget.
 const SLEEP_SLICE: Duration = Duration::from_millis(5);

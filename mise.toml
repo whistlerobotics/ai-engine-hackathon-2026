@@ -18,7 +18,7 @@ description = "Build hand-guiding, which mock-robot and real-robot start"
 run = "cargo build --release -p hand-guiding"
 
 [tasks.test-policy]
-description = "A stand-in policy on port 8000; `mise run test-policy -- --help` lists late, chunked and invalid replies"
+description = "A stand-in policy on port 8000; `mise run test-policy -- --help` lists replays and late, chunked and invalid replies"
 run = "python3 test-policy.py"
 
 [tasks.policy-runner]
@@ -37,3 +37,16 @@ run = "uv sync --locked"
 description = "Format, lint and type-check the Python code"
 depends = ["python:sync"]
 run = ["ruff format", "ruff check", "basedpyright"]
+
+[tasks.extract-video]
+description = "Turn recorded episodes' camera frames into MP4s next to them; takes a json file captures with the `mise run record`"
+usage = 'arg "<episode>" var=#true help="An episode saved by `mise run record`"'
+dir = "{{cwd}}"
+run = '''
+for episode in $usage_episode; do
+  jq -r '.steps[].images.top' "$episode" | while read -r frame; do printf %s "$frame" | base64 -d; done \
+    | ffmpeg -loglevel error -y -f image2pipe -framerate "1/$(jq .step_s "$episode")" -c:v mjpeg -i - \
+      -c:v libx264 -pix_fmt yuv420p "${episode%.json}.mp4"
+  echo "${episode%.json}.mp4"
+done
+'''
