@@ -308,6 +308,12 @@
         <mesh filename="../assets/wrist_bracket_camera_plate.stl"/>
       </geometry>
     </visual>
+    <visual>
+      <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
+      <geometry>
+        <mesh filename="../assets/orbbec_gemini_336.stl"/>
+      </geometry>
+    </visual>
     <collision>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
@@ -320,42 +326,22 @@
         <mesh filename="../assets/wrist_bracket_camera_plate.stl"/>
       </geometry>
     </collision>
-    <!-- The mass is estimated based on the density of PLA -->
-    <inertial>
-      <mass value="0.250"/>
-      <origin rpy="0 0 0" xyz="-0.0144 -0.0346 0.0095"/>
-      <inertia ixx="8.458e-04" ixy="-2.959e-04" ixz="2.143e-05" iyy="2.538e-04" iyz="5.177e-05" izz="1.051e-03"/>
-    </inertial>
-  </link>
-  <joint name="tool0-wrist_bracket" type="fixed">
-    <parent link="tool0"/>
-    <child link="wrist_bracket"/>
-    <origin rpy="0 0 0" xyz="0 0 0"/>
-  </joint>
-  <!-- The Gemini 336 on the bracket. Its CAD shares the bracket's origin, so its mesh takes the
-       same offset. This frame is the bracket's, not the camera's optical frame. -->
-  <link name="wrist_camera">
-    <visual>
-      <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
-      <geometry>
-        <mesh filename="../assets/orbbec_gemini_336.stl"/>
-      </geometry>
-    </visual>
     <collision>
       <origin rpy="0 0 2.748893571891069" xyz="0 0 -0.0064"/>
       <geometry>
         <mesh filename="../assets/orbbec_gemini_336.stl"/>
       </geometry>
     </collision>
+    <!-- The PLA bracket (250 g, from its volume) and the camera (Orbbec's 99 g) together -->
     <inertial>
-      <mass value="0.099"/>
-      <origin rpy="0 0 0" xyz="-0.0552 -0.1332 0.0516"/>
-      <inertia ixx="2.191e-05" ixy="2.167e-05" ixz="-3.544e-07" iyy="6.524e-05" iyz="-8.556e-07" izz="7.236e-05"/>
+      <mass value="0.349"/>
+      <origin rpy="0 0 0" xyz="-0.026 -0.0626 0.0214"/>
+      <inertia ixx="1.682e-03" ixy="-5.590e-04" ixz="1.428e-04" iyy="5.621e-04" iyz="3.453e-04" izz="1.930e-03"/>
     </inertial>
   </link>
-  <joint name="wrist_bracket-wrist_camera" type="fixed">
-    <parent link="wrist_bracket"/>
-    <child link="wrist_camera"/>
+  <joint name="tool0-wrist_bracket" type="fixed">
+    <parent link="tool0"/>
+    <child link="wrist_bracket"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
   </joint>
   <link name="gripper_mount"/>
