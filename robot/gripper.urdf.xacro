@@ -66,8 +66,10 @@
     <origin xyz="0 0 0.0244" rpy="0 0 ${-pi / 8}"/>
   </joint>
 
+  <!-- 25 N, as robotiq_driver multiplies the force multiplier by 235 N, not gripper_max_force. -->
   <xacro:robotiq_gripper name="RobotiqGripperHardwareInterface" prefix="" parent="gripper_mount"
-                         use_fake_hardware="$(arg use_fake_hardware)" com_port="$(arg com_port)">
+                         use_fake_hardware="$(arg use_fake_hardware)" com_port="$(arg com_port)"
+                         gripper_speed_multiplier="0.5" gripper_force_multiplier="${25.0 / 235.0}">
     <!-- Straight onto the bracket, whose centring bore takes the gripper's spigot. A coupling in
          between would add its thickness to z. -->
     <origin xyz="0 0 0" rpy="0 0 0"/>
