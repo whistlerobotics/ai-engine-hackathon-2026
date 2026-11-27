@@ -85,3 +85,38 @@ active X11 desktop on display `:0`.
 Verified on Spark: RViz's global status is OK, the arm and gripper render, and
 all three image panels receive live compressed camera frames. The viewer has no
 trajectory or gripper command publishers.
+
+## Existing Qwen CV/IK policy with the mock ROS driver
+
+Quit an existing mock runner with `q` while idle, then run on Spark:
+
+```bash
+bash ~/run-rc-qwen-ros-sim.sh
+```
+
+First Enter moves the mock arm to start; second Enter starts Qwen. Esc aborts
+and holds; q quits while idle. RViz can stay open. This uses the existing BF16
+Qwen CV/IK server and the three real cameras; it does not quantize or reload the
+model. The three-view adapter adds `bolt_to_tray`'s instruction and captured
+wrist goal image. The real scene will not respond to mock movement, so this
+checks the integration and cannot demonstrate closed-loop task completion.
+
+The launcher first prepares the existing isolated mock driver and camera relay.
+A locked `socat` relay exposes only the existing policy HTTP server through a
+filesystem Unix socket. Inside the mock container it is available at
+`http://127.0.0.1:18001`; the host adapter remains `127.0.0.1:18081`, forwarding
+to Qwen on `127.0.0.1:18080`. Docker networking stays disabled and no physical
+devices are mounted in the mock container. Joint and gripper commands remain
+in the mock ROS domain. The model service is shared with the real-arm adapter;
+use one policy episode at a time to avoid competing for its planner state.
+
+`bash ~/run-rc-qwen-ros-sim.sh --prepare-only` checks the setup without opening
+a runner. Logs are `/tmp/mock-qwen-export.log` in `relaxed_clarke` and
+`/tmp/mock-qwen-import.log` in `rc-ros-driver-sim`.
+
+Validation on Spark: an inference request through the isolated relay, using mock
+joint state and three real camera views, returned a valid bounded joint-delta
+action in 4.553 seconds, with no planner fallback. Three subsequent control
+requests took 18.4, 4.3 and 4.2 ms, below the runner's 100 ms control timeout.
+These API checks published no motion commands and are not
+a completed runner episode or a calibrated real-arm test.

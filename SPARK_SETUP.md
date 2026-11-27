@@ -34,3 +34,13 @@ The three-view translation layer supplies the instruction and goal image;
 Camera-to-base calibration is still unverified.
 See [camera recording](THREE_CAMERA_RECORDING.md) and
 [alignment notes](CAMERA_ALIGNMENT_DRAFT.md).
+
+To replace the deterministic test policy with the existing BF16 Qwen CV/IK
+policy while retaining the mock ROS arm and real cameras:
+
+```bash
+bash ~/run-rc-qwen-ros-sim.sh
+```
+
+Quit the existing mock runner with q while idle before opening the Qwen runner.
+See the Qwen section in [ROS driver simulation](ROS_DRIVER_SIMULATION.md).

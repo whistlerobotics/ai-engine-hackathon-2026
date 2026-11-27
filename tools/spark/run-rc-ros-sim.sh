@@ -50,6 +50,8 @@ source /opt/ros/kilted/setup.bash
 python3 /home/rosdev/ros2_ws/tools/bridge-real-cameras.py check
 '
 
+[[ ${1:-} != --prepare-only ]] || exit 0
+
 echo 'Mock ROS driver: isolated domain 77, networking disabled, no physical devices.'
 echo 'Uses a deterministic wrist/gripper test policy with real camera frames.'
 echo 'Left, right and wrist feeds are copied into the mock domain; the runner monitors right.'
