@@ -44,13 +44,13 @@ struct Args {
     /// The `task_id` sent to the policy; `t` changes it between episodes.
     #[arg(long)]
     task: String,
-    /// Compressed-image topic used for camera frames and the live indicator.
+    /// Compressed-image topic used for policy frames and the policy-input live indicator.
     #[arg(long, default_value = CAMERA_TOPIC, conflicts_with = "no_camera")]
     camera_topic: String,
     /// Native compressed-image dimensions, WIDTHxHEIGHT; frames are not resized.
     #[arg(long, default_value = "640x360", value_parser = camera_size, conflicts_with = "no_camera")]
     camera_size: (usize, usize),
-    /// Send a black frame instead of the camera's.
+    /// Send a black frame to the policy; the three camera feeds are still monitored.
     #[arg(long)]
     no_camera: bool,
 }

@@ -71,8 +71,10 @@ impl Shared {
 pub struct Robot {
     pub arm_live: bool,
     pub gripper_live: bool,
-    /// None without a camera topic.
+    /// None when the selected policy input is a black frame.
     pub camera_live: Option<bool>,
+    /// Left, right, and wrist feed freshness.
+    pub cameras_live: [bool; 3],
     pub at_start: bool,
     /// The pendant's speed slider, in percent; None while stale.
     pub speed_scaling: Option<f64>,
@@ -87,6 +89,7 @@ impl Robot {
             arm_live: arm.is_some(),
             gripper_live: ros.finger().as_ref().is_some_and(Received::is_fresh),
             camera_live: ros.camera_live(),
+            cameras_live: ros.cameras_live(),
             at_start: arm
                 .is_some_and(|arm| distance_to_start(&arm.value.position) <= AT_START_TOLERANCE),
             speed_scaling: ros
@@ -323,6 +326,7 @@ mod tests {
         arm_live: true,
         gripper_live: true,
         camera_live: None,
+        cameras_live: [true; 3],
         at_start: false,
         speed_scaling: Some(100.0),
         gripper_hardware: None,

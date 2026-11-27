@@ -25,7 +25,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CAMERA_TOPIC: &str = "/right_camera/color/image_raw/compressed";
+const CAMERA_TOPICS: [&str; 3] = [
+    "/left_camera/color/image_raw/compressed",
+    "/right_camera/color/image_raw/compressed",
+    "/wrist_camera/color/image_raw/compressed",
+];
+pub const CAMERA_TOPIC: &str = CAMERA_TOPICS[1];
 const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scaling";
 const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";
@@ -58,6 +63,7 @@ pub struct Ros {
     speed_scaling: Latest<f64>,
     gripper_hardware: Arc<Mutex<Option<GripperHardware>>>,
     camera: Camera,
+    cameras: Cameras,
     camera_size: (usize, usize),
     trajectory: Publisher<JointTrajectory>,
     finger_command: Publisher<Float64MultiArray>,
@@ -78,12 +84,44 @@ enum Camera {
     Topic(Latest<Vec<u8>>),
 }
 
+#[derive(Default)]
+struct Cameras {
+    frames: [Latest<Vec<u8>>; 3],
+}
+
+impl Cameras {
+    fn frame(&self, topic: &str) -> Option<Latest<Vec<u8>>> {
+        CAMERA_TOPICS
+            .iter()
+            .position(|candidate| *candidate == topic)
+            .map(|index| Arc::clone(&self.frames[index]))
+    }
+
+    fn live(&self) -> [bool; 3] {
+        self.frames
+            .each_ref()
+            .map(|frame| frame.lock().as_ref().is_some_and(Received::is_fresh))
+    }
+}
+
+fn subscribe_camera(
+    node: &Node,
+    topic: &str,
+    frame: &Latest<Vec<u8>>,
+) -> Result<Subscription<CompressedImage>> {
+    // Camera drivers publish best-effort, which a reliable subscription wouldn't match.
+    let frame = Arc::clone(frame);
+    Ok(node.create_subscription(topic.best_effort().keep_last(1), {
+        move |msg: CompressedImage| store(&frame, msg.data)
+    })?)
+}
+
 struct Subscriptions {
     _arm: Subscription<JointState>,
     _finger: Subscription<JointState>,
     _speed_scaling: Subscription<Float64>,
     _gripper_description: Subscription<StringMsg>,
-    _camera: Option<Subscription<CompressedImage>>,
+    _cameras: Vec<Subscription<CompressedImage>>,
 }
 
 impl Ros {
@@ -137,22 +175,25 @@ impl Ros {
                 }
             })?;
 
-        let (camera, camera_subscription) = match source {
+        let cameras = Cameras::default();
+        let mut camera_subscriptions = Vec::new();
+        for (topic, frame) in CAMERA_TOPICS.iter().zip(&cameras.frames) {
+            camera_subscriptions.push(subscribe_camera(&node, topic, frame)?);
+        }
+        let camera = match source {
             CameraSource::RosTopic => {
-                let frame = Latest::default();
-                // The camera driver publishes best-effort, which a reliable subscription wouldn't
-                // match.
-                let subscription =
-                    node.create_subscription(camera_topic.best_effort().keep_last(1), {
-                        let frame = Arc::clone(&frame);
-                        move |msg: CompressedImage| store(&frame, msg.data)
-                    })?;
-                (Camera::Topic(frame), Some(subscription))
+                let frame = if let Some(frame) = cameras.frame(camera_topic) {
+                    frame
+                } else {
+                    let frame = Latest::default();
+                    camera_subscriptions.push(subscribe_camera(&node, camera_topic, &frame)?);
+                    frame
+                };
+                Camera::Topic(frame)
             }
-            CameraSource::BlackImage => {
-                let base64 = BASE64.encode(BLACK_JPEG);
-                (Camera::Black { base64 }, None)
-            }
+            CameraSource::BlackImage => Camera::Black {
+                base64: BASE64.encode(BLACK_JPEG),
+            },
         };
 
         let trajectory = node.create_publisher(TRAJECTORY_TOPIC)?;
@@ -170,6 +211,7 @@ impl Ros {
             speed_scaling,
             gripper_hardware,
             camera,
+            cameras,
             camera_size,
             trajectory,
             finger_command,
@@ -178,7 +220,7 @@ impl Ros {
                 _finger: finger_subscription,
                 _speed_scaling: speed_scaling_subscription,
                 _gripper_description: gripper_description_subscription,
-                _camera: camera_subscription,
+                _cameras: camera_subscriptions,
             },
             _node: node,
             _executor_thread: executor_thread,
@@ -208,6 +250,11 @@ impl Ros {
             Camera::Black { .. } => None,
             Camera::Topic(frame) => Some(frame.lock().as_ref().is_some_and(Received::is_fresh)),
         }
+    }
+
+    /// Left, right, and wrist feed freshness, independent of the selected policy input.
+    pub fn cameras_live(&self) -> [bool; 3] {
+        self.cameras.live()
     }
 
     /// The latest camera frame, base64-encoded, once it passes the frame checks; or the black
@@ -339,6 +386,38 @@ mod tests {
     use policy_contract::ARM_JOINTS;
     use std::assert_matches;
     use test_case::test_case;
+
+    #[test_case(0)]
+    #[test_case(1)]
+    #[test_case(2)]
+    fn camera_freshness_is_independent(index: usize) {
+        let cameras = Cameras::default();
+        assert_eq!(cameras.live(), [false; 3]);
+        for frame in &cameras.frames {
+            *frame.lock() = Some(Received {
+                value: vec![1, 2, 3],
+                at: Instant::now() - STALE_AFTER - Duration::from_secs(1),
+            });
+        }
+        store(&cameras.frames[index], vec![4, 5, 6]);
+        let mut expected = [false; 3];
+        expected[index] = true;
+        assert_eq!(cameras.live(), expected);
+        cameras.frames[index].lock().as_mut().unwrap().at -= Duration::from_secs(1);
+        assert_eq!(cameras.live(), [false; 3]);
+    }
+
+    #[test_case(0)]
+    #[test_case(1)]
+    #[test_case(2)]
+    fn selected_camera_reuses_monitored_frame(index: usize) {
+        let cameras = Cameras::default();
+        let selected = cameras.frame(CAMERA_TOPICS[index]).unwrap();
+        assert!(Arc::ptr_eq(&selected, &cameras.frames[index]));
+        store(&cameras.frames[index], vec![1, 2, 3]);
+        assert_eq!(latest(&selected).unwrap().value, vec![1, 2, 3]);
+        assert_matches!(cameras.frame("/custom/image/compressed"), None);
+    }
 
     #[test_case(&[[0.25; 6]] => vec![[0.5; 6]]; "one step")]
     #[test_case(&[[0.25; 6], [0.75; 6]] => vec![[0.5; 6], [1.0; 6]]; "two steps")]

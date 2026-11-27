@@ -18,7 +18,7 @@ use std::time::Duration;
 pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
     let [header, middle, log, footer] = Layout::vertical([
         Constraint::Length(4),
-        Constraint::Length(9),
+        Constraint::Length(12),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -52,7 +52,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
         CameraSource::RosTopic => app.camera_topic.as_str(),
         CameraSource::BlackImage => "none, a black frame is sent",
     };
-    let connection = Line::from(format!("Task    {}    Camera  {camera}", app.task_id));
+    let connection = Line::from(format!("Task    {}    Policy input  {camera}", app.task_id));
     frame.render_widget(
         Paragraph::new(vec![Line::from(policy), connection])
             .block(Block::bordered().title(" Policy runner ")),
@@ -103,21 +103,21 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
             ("stale", Color::Red)
         };
         Line::from(vec![
-            Span::raw(format!("{name:<12}")),
+            Span::raw(format!("{name:<13}")),
             dot(color),
             Span::raw(text),
         ])
     };
     let camera = robot.camera_live.map_or_else(
-        || Line::from(format!("{:<12}– black frame", "Camera")),
-        |camera_live| live("Camera", camera_live),
+        || Line::from(format!("{:<13}– black frame", "Policy input")),
+        |camera_live| live("Policy input", camera_live),
     );
     let start_pose = if robot.at_start {
         Span::styled("✓ reached", Color::Green)
     } else {
         Span::raw("✗ away")
     };
-    let setting = |name: &str, value: String| Line::from(format!("{name:<12}{value}"));
+    let setting = |name: &str, value: String| Line::from(format!("{name:<13}{value}"));
     let (grip_speed, grip_force) = match robot.gripper_hardware {
         None => ("–".to_owned(), "–".to_owned()),
         Some(GripperHardware::Other) => ("– mock".to_owned(), "– mock".to_owned()),
@@ -129,8 +129,11 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
     let lines = vec![
         live("Arm", robot.arm_live),
         live("Gripper", robot.gripper_live),
+        live("Left camera", robot.cameras_live[0]),
+        live("Right camera", robot.cameras_live[1]),
+        live("Wrist camera", robot.cameras_live[2]),
         camera,
-        Line::from(vec![Span::raw(format!("{:<12}", "Start pose")), start_pose]),
+        Line::from(vec![Span::raw(format!("{:<13}", "Start pose")), start_pose]),
         setting(
             "Arm speed",
             robot
@@ -337,6 +340,7 @@ mod tests {
         arm_live: true,
         gripper_live: true,
         camera_live: None,
+        cameras_live: [true; 3],
         at_start: false,
         speed_scaling: Some(100.0),
         gripper_hardware: None,
@@ -375,7 +379,10 @@ mod tests {
         assert!(shows(&screen, "http://127.0.0.1:8000"), "{screen:#?}");
         assert!(shows(&screen, "bench_lift_can_v0"), "{screen:#?}");
         assert!(shows(&screen, "none, a black frame is sent"), "{screen:#?}");
-        assert!(shows(&screen, "– black frame"), "{screen:#?}");
+        assert!(shows(&screen, "Policy input – black frame"), "{screen:#?}");
+        for name in ["Left camera", "Right camera", "Wrist camera"] {
+            assert!(shows(&screen, &format!("{name:<13}● live")), "{screen:#?}");
+        }
     }
 
     #[test_case(Health::Up, Readiness::Ready => "health up    ready yes"; "ready")]
@@ -421,16 +428,56 @@ mod tests {
             ..LIVE
         };
         let screen = screen(&shared(), CameraSource::RosTopic, robot);
-        assert!(shows(&screen, "Arm         ● stale"), "{screen:#?}");
-        assert!(shows(&screen, "Gripper     ● live"), "{screen:#?}");
-        assert!(shows(&screen, "Camera      ● live"), "{screen:#?}");
+        assert!(shows(&screen, "Arm          ● stale"), "{screen:#?}");
+        assert!(shows(&screen, "Gripper      ● live"), "{screen:#?}");
+        assert!(shows(&screen, "Policy input ● live"), "{screen:#?}");
     }
 
-    #[test_case(None, None => ["Arm speed   –", "Grip speed  –", "Grip force  –"]; "nothing received")]
+    #[test_case([true, false, false])]
+    #[test_case([false, true, false])]
+    #[test_case([false, false, true])]
+    fn independent_camera_rows(cameras_live: [bool; 3]) {
+        let robot = Robot {
+            cameras_live,
+            camera_live: Some(false),
+            ..LIVE
+        };
+        let screen = screen(&shared(), CameraSource::RosTopic, robot);
+        for (name, live) in ["Left camera", "Right camera", "Wrist camera"]
+            .into_iter()
+            .zip(cameras_live)
+        {
+            let status = if live { "live" } else { "stale" };
+            assert!(
+                shows(&screen, &format!("{name:<13}● {status}")),
+                "{screen:#?}"
+            );
+        }
+        assert!(shows(&screen, "Policy input ● stale"), "{screen:#?}");
+        assert!(
+            shows(
+                &screen,
+                "Policy input  /right_camera/color/image_raw/compressed"
+            ),
+            "{screen:#?}"
+        );
+        for text in [
+            "Start pose",
+            "Arm speed",
+            "Grip speed",
+            "Grip force",
+            "No episode yet.",
+            "Enter move to the start pose",
+        ] {
+            assert!(shows(&screen, text), "{screen:#?}");
+        }
+    }
+
+    #[test_case(None, None => ["Arm speed    –", "Grip speed   –", "Grip force   –"]; "nothing received")]
     #[test_case(Some(100.0), Some(GripperHardware::Other)
-        => ["Arm speed   100 %", "Grip speed  – mock", "Grip force  – mock"]; "mock")]
+        => ["Arm speed    100 %", "Grip speed   – mock", "Grip force   – mock"]; "mock")]
     #[test_case(Some(30.0), Some(GripperHardware::Robotiq { speed_multiplier: 1.0, force: 117.5 })
-        => ["Arm speed   30 %", "Grip speed  1.00×", "Grip force  117.5 N"]; "real")]
+        => ["Arm speed    30 %", "Grip speed   1.00×", "Grip force   117.5 N"]; "real")]
     fn speeds_and_force(
         speed_scaling: Option<f64>,
         gripper_hardware: Option<GripperHardware>,
