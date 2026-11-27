@@ -2,7 +2,7 @@ use crate::{
     app::{App, Phase, Robot},
     episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEPS},
     gripper::GripperHardware,
-    policy::{Health, Readiness, connection_reason},
+    policy::{Health, Readiness},
 };
 use policy_contract::STEP;
 use ratatui::{
@@ -17,7 +17,7 @@ use std::time::Duration;
 pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
     let [header, middle, log, footer] = Layout::vertical([
         Constraint::Length(4),
-        Constraint::Length(13),
+        Constraint::Length(12),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -34,43 +34,22 @@ pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
-    let mut policy = vec![Span::raw("Policy  ")];
-    let snapshot = app.shared.policy.lock();
-    let failure = snapshot
-        .as_ref()
-        .and_then(|status| match (&status.health, &status.readiness) {
-            (Health::Unreachable(reason), _) | (_, Readiness::Unreachable(reason)) => {
-                Some(connection_reason(reason).to_owned())
-            }
-            (Health::HttpStatus(code), _) => Some(format!("Health endpoint returned HTTP {code}")),
-            (_, Readiness::HttpStatus(code)) => {
-                Some(format!("Readiness endpoint returned HTTP {code}"))
-            }
-            _ => None,
-        });
-    if let Some(reason) = failure {
-        policy.push(Span::styled(reason, Color::Red));
-        policy.push(Span::raw(format!("    {}", app.policy_url)));
-    } else {
-        policy.push(Span::raw(app.policy_url.clone()));
-        match snapshot.as_ref() {
-            None => policy.push(Span::raw("    not polled yet")),
-            Some(status) => policy.extend([
-                Span::raw("    health "),
-                health_label(&status.health),
-                Span::raw("    ready "),
-                readiness_label(&status.readiness),
-            ]),
-        }
+    let mut policy = vec![Span::raw("Policy  "), Span::raw(app.policy_url.clone())];
+    match app.shared.policy.lock().as_ref() {
+        None => policy.push(Span::raw("    not polled yet")),
+        Some(status) => policy.extend([
+            Span::raw("    health "),
+            health_label(&status.health),
+            Span::raw("    ready "),
+            readiness_label(&status.readiness),
+        ]),
     }
-    drop(snapshot);
     if phase == Phase::Running {
         policy.push(Span::raw("    polling paused during the episode"));
     }
     let connection = Line::from(format!(
-        "Mode    MOCK    Task    {}    Goals: {}",
-        app.task_id,
-        app.task_error.as_deref().unwrap_or("ready")
+        "Task    {}    Policy input  wrist, left, right    MOCK",
+        app.task_id
     ));
     frame.render_widget(
         Paragraph::new(vec![Line::from(policy), connection])
@@ -132,7 +111,7 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
     } else {
         Span::raw("✗ away")
     };
-    let setting = |name: &str, value: String| Line::from(format!("{name:<12}{value}"));
+    let setting = |name: &str, value: String| Line::from(format!("{name:<13}{value}"));
     let (grip_speed, grip_force) = match robot.gripper_hardware {
         None => ("–".to_owned(), "–".to_owned()),
         Some(GripperHardware::Other) => ("– mock".to_owned(), "– mock".to_owned()),
@@ -144,12 +123,11 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
     let lines = vec![
         live("Arm", robot.arm_live),
         live("Gripper", robot.gripper_live),
-        live("Controller", robot.controller_live),
-        live("Grip ctrl", robot.gripper_controller_live),
         live("Left camera", robot.camera_live[1]),
         live("Right camera", robot.camera_live[2]),
         live("Wrist camera", robot.camera_live[0]),
-        Line::from(vec![Span::raw(format!("{:<12}", "Start pose")), start_pose]),
+        live("Policy input", robot.camera_live.iter().all(|&live| live)),
+        Line::from(vec![Span::raw(format!("{:<13}", "Start pose")), start_pose]),
         setting(
             "Arm speed",
             robot
@@ -208,13 +186,7 @@ fn draw_progress(frame: &mut Frame<'_>, rows: &[Rect], progress: &Progress) {
         Color::Blue,
     );
     frame.render_widget(
-        Paragraph::new(format!(
-            "{:<10}{}    Holds {}    Wall {:.1} s",
-            "Late",
-            progress.counts.late,
-            progress.counts.holds,
-            progress.elapsed().as_secs_f64()
-        )),
+        Paragraph::new(format!("{:<10}{}", "Late", progress.counts.late)),
         *counts,
     );
     let margin = progress.tracking_error / MAX_TRACKING_ERROR;
@@ -269,7 +241,7 @@ fn gauge_row(
     frame.render_widget(Paragraph::new(text), text_area);
 }
 
-/// The latest `/act` latencies, scaled to the request timeout so the 50 ms step is at half
+/// The latest `/act` latencies, scaled so the 50 ms step is at half
 /// height, with slower replies in yellow.
 fn latency_row(frame: &mut Frame<'_>, area: Rect, latencies: &[Duration]) {
     let [name_area, chart_area, text_area] = row_areas(area);
@@ -351,10 +323,7 @@ mod tests {
     use super::*;
     use crate::{app::Shared, episode::Counts, log::Log, policy::PolicyStatus};
     use ratatui::{Terminal, backend::TestBackend};
-    use std::{
-        sync::{Arc, mpsc},
-        time::Instant,
-    };
+    use std::sync::{Arc, mpsc};
     use test_case::test_case;
 
     const LIVE: Robot = Robot {
@@ -399,8 +368,11 @@ mod tests {
         let screen = screen(&shared(), LIVE);
         assert!(shows(&screen, "http://policy.test:8000"), "{screen:#?}");
         assert!(shows(&screen, "bench_lift_can_v0"), "{screen:#?}");
-        assert!(shows(&screen, "Mode    MOCK"), "{screen:#?}");
-        assert!(shows(&screen, "Goals: ready"), "{screen:#?}");
+        assert!(shows(&screen, "MOCK"), "{screen:#?}");
+        assert!(
+            shows(&screen, "Policy input  wrist, left, right"),
+            "{screen:#?}"
+        );
     }
 
     #[test_case(Health::Up, Readiness::Ready => "health up    ready yes"; "ready")]
@@ -408,9 +380,9 @@ mod tests {
     #[test_case(
         Health::Unreachable("refused".to_owned()),
         Readiness::Unreachable("refused".to_owned())
-        => "Policy  Connection refused    http://policy.test:8000";
+        => "health down    ready no";
         "unreachable")]
-    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "Policy  Health endpoint returned HTTP 503    http://policy.test:8000"; "http error")]
+    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "health down    ready no"; "http error")]
     #[test_case(
         Health::Up,
         Readiness::Incompatible { contract: Some("v1".to_owned()), schema_version: Some(2) }
@@ -451,11 +423,11 @@ mod tests {
         assert!(shows(&screen, "Wrist camera ● live"), "{screen:#?}");
     }
 
-    #[test_case(None, None => ["Arm speed   –", "Grip speed  –", "Grip force  –"]; "nothing received")]
+    #[test_case(None, None => ["Arm speed    –", "Grip speed   –", "Grip force   –"]; "nothing received")]
     #[test_case(Some(100.0), Some(GripperHardware::Other)
-        => ["Arm speed   100 %", "Grip speed  – mock", "Grip force  – mock"]; "mock")]
+        => ["Arm speed    100 %", "Grip speed   – mock", "Grip force   – mock"]; "mock")]
     #[test_case(Some(30.0), Some(GripperHardware::Robotiq { speed_multiplier: 1.0, force: 117.5 })
-        => ["Arm speed   30 %", "Grip speed  1.00×", "Grip force  117.5 N"]; "real")]
+        => ["Arm speed    30 %", "Grip speed   1.00×", "Grip force   117.5 N"]; "real")]
     fn speeds_and_force(
         speed_scaling: Option<f64>,
         gripper_hardware: Option<GripperHardware>,
@@ -515,12 +487,9 @@ mod tests {
         let shared = shared();
         *shared.phase.lock() = Phase::Running;
         *shared.progress.lock() = Some(Progress {
-            started: Instant::now(),
-            duration: None,
             counts: Counts {
                 steps: 120,
                 late: 3,
-                holds: 1,
                 http: Duration::from_secs(3),
             },
             latencies: vec![Duration::from_millis(23), Duration::from_millis(80)],
@@ -529,7 +498,7 @@ mod tests {
         let screen = screen(&shared, LIVE);
         assert!(shows(&screen, "running an episode"), "{screen:#?}");
         assert!(shows(&screen, &format!("120 / {STEPS}")), "{screen:#?}");
-        assert!(shows(&screen, "Late      3    Holds 1"), "{screen:#?}");
+        assert!(shows(&screen, "Late      3"), "{screen:#?}");
         assert!(shows(&screen, "last 80 ms"), "{screen:#?}");
 
         let footer = screen.last().map_or("", String::as_str).trim_end();

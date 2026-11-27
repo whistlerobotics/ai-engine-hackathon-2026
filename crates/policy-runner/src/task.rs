@@ -3,7 +3,7 @@ use color_eyre::{
     Result,
     eyre::{WrapErr, ensure, eyre},
 };
-use policy_contract::{Joints, SCHEMA_VERSION, image::check_policy_jpeg, wire::Images};
+use policy_contract::{SCHEMA_VERSION, image::check_policy_jpeg, wire::Images};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -16,7 +16,6 @@ use std::{
 struct Manifest {
     schema_version: u32,
     revision: String,
-    start_pose_rad: Joints,
     tasks: Vec<Entry>,
 }
 
@@ -25,8 +24,6 @@ struct Entry {
     task_id: String,
     instruction: String,
     variant: String,
-    seed: i64,
-    wrist_pose_rad: Joints,
     goal: Goals,
 }
 
@@ -47,8 +44,6 @@ struct Asset {
 }
 
 pub struct TaskPack {
-    pub revision: String,
-    pub start: Joints,
     root: PathBuf,
     entries: HashMap<String, Entry>,
 }
@@ -58,8 +53,6 @@ pub struct Task {
     pub id: String,
     pub instruction: String,
     pub goal: Images,
-    pub variant: String,
-    pub seed: i64,
 }
 
 impl TaskPack {
@@ -72,14 +65,6 @@ impl TaskPack {
         ensure!(
             manifest.schema_version == SCHEMA_VERSION && !manifest.revision.trim().is_empty(),
             "task pack requires schema 3 and a revision"
-        );
-        ensure!(
-            manifest
-                .start_pose_rad
-                .iter()
-                .enumerate()
-                .all(|(j, q)| q.is_finite() && q.abs() <= joint_limit(j)),
-            "start pose exceeds mock joint limits"
         );
         let mut entries = HashMap::new();
         for task in manifest.tasks {
@@ -96,8 +81,6 @@ impl TaskPack {
             );
         }
         Ok(Self {
-            revision: manifest.revision,
-            start: manifest.start_pose_rad,
             root: path
                 .parent()
                 .ok_or_else(|| eyre!("invalid task pack location"))?
@@ -117,8 +100,7 @@ impl TaskPack {
                 && entry
                     .variant
                     .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-                && entry.wrist_pose_rad.iter().all(|q| q.is_finite()),
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
             "incomplete task context"
         );
         let load = |role: &str, asset: &Asset| -> Result<String> {
@@ -163,17 +145,7 @@ impl TaskPack {
             id: id.to_owned(),
             instruction: entry.instruction.clone(),
             goal,
-            variant: entry.variant.clone(),
-            seed: entry.seed,
         })
-    }
-}
-
-pub const fn joint_limit(joint: usize) -> f64 {
-    if joint == 2 {
-        2.792526803190927
-    } else {
-        6.28319
     }
 }
 

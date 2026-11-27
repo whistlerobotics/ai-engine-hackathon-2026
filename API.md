@@ -26,20 +26,15 @@ The response body contains `episode_id`, `step` and `action`. Echo the first two
 fields in both the body and the `X-RC-Episode-Id` and `X-RC-Step` response headers.
 An action is one `{"type":"joint_delta","values":[0,0,0,0,0,0],"gripper":1}` or
 `{"type":"action_chunk","actions":[...]}` with 1–16 such elements.
-Optional integer `chunk_len` must equal the array length. Unknown response and
-chunk wrapper keys are ignored, except that `values` or `gripper` on a chunk
-wrapper makes it malformed. Action elements accept exactly `type`, `values`,
-and `gripper`.
+Optional integer `chunk_len` must equal the array length. Whistle uses its
+existing reply validator: unknown fields must begin with `_`, each joint delta
+must be finite and within ±0.05 rad, and gripper opening must be in [0, 1].
+The runner rejects an invalid reply before applying any element of the chunk.
 
-Finite deltas are clamped to ±0.05 rad and added to the commanded joint target.
-The gripper target is absolute and clamped to [0, 1]. Mock motion also follows
-Reality Check's joint position bounds (±6.28319 rad, with the elbow at
-±2.792526803190927 rad) and scales steps that would exceed 1.5 m/s at the tool
-center point or elbow. The whole reply is
-validated before movement. A malformed delivered response, including a bad echo
-or any malformed chunk element, becomes one zero-delta step with the previous
-gripper target. Transport failure or cancellation stops the run. Stop and
-invalid feedback discard unapplied actions.
+Reality Check's scoring runner and engine own clamping, joint target bounds,
+and tool and elbow speed scaling. Send in-range values for a policy that runs
+on both paths. The Whistle mock applies accepted deltas through its ROS
+controllers and stops the episode on an invalid reply.
 
 Each element consumes one 50 ms action step, up to 1,200 steps. Cumulative
 `/act` transport is limited to 90 seconds, with a connection timeout at most
@@ -47,6 +42,7 @@ Each element consumes one 50 ms action step, up to 1,200 steps. Cumulative
 Mock runs have no manipulation success signal.
 
 The [shared fixture](docs/contract-fixtures/whistle-policy-v3.json) is identical to
-Reality Check's fixture. It includes a complete observation and normalization and
-hold cases. The fixture images are synthetic. The deployed task pack contains
+Reality Check's fixture. Whistle tests the shared request. The fixture's
+normalization and hold cases specify Reality Check's scoring behavior. The
+fixture images are synthetic. The deployed task pack contains
 the actual goal images for each supported run context.

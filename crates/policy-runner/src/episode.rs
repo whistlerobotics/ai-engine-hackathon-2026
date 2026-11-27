@@ -1,9 +1,7 @@
 use crate::{
-    motion,
-    policy::{ActError, Policy},
+    policy::Policy,
     ros::{Received, Ros},
-    task::{Task, joint_limit},
-    worker::hold_verified,
+    task::Task,
 };
 use color_eyre::{
     Result,
@@ -45,7 +43,6 @@ pub struct Report {
 pub struct Counts {
     pub steps: u32,
     pub late: u32,
-    pub holds: u32,
     pub http: Duration,
 }
 
@@ -62,12 +59,11 @@ impl fmt::Display for Report {
         }
         write!(
             f,
-            "; {} steps, {:.2} s wall, {:.2} s action, {:.2} s HTTP, {} held steps",
+            "; {} steps, {:.2} s wall, {:.2} s action, {:.2} s HTTP",
             self.counts.steps,
             self.duration.as_secs_f64(),
             (STEP * self.counts.steps).as_secs_f64(),
             self.counts.http.as_secs_f64(),
-            self.counts.holds
         )
     }
 }
@@ -75,9 +71,6 @@ impl fmt::Display for Report {
 /// An episode as it runs, for the operator's display.
 #[derive(Debug, Clone)]
 pub struct Progress {
-    pub started: Instant,
-    /// Set when the episode has ended.
-    pub duration: Option<Duration>,
     pub counts: Counts,
     /// Of every `/act` call that got a valid reply, in order.
     pub latencies: Vec<Duration>,
@@ -88,16 +81,10 @@ pub struct Progress {
 impl Progress {
     fn new() -> Self {
         Self {
-            started: Instant::now(),
-            duration: None,
             counts: Counts::default(),
             latencies: Vec::new(),
             tracking_error: 0.0,
         }
-    }
-
-    pub fn elapsed(&self) -> Duration {
-        self.duration.unwrap_or_else(|| self.started.elapsed())
     }
 }
 
@@ -122,7 +109,7 @@ pub struct Episode<'a> {
     id: String,
     started: Instant,
     q_cmd: Joints,
-    gripper_target: f64,
+    commanded: bool,
     counts: Counts,
 }
 
@@ -146,7 +133,7 @@ impl<'a> Episode<'a> {
             id: episode_id(),
             started: Instant::now(),
             q_cmd: [0.0; 6],
-            gripper_target: 0.0,
+            commanded: false,
             counts: Counts::default(),
         };
         let outcome = match episode.step_loop() {
@@ -154,15 +141,13 @@ impl<'a> Episode<'a> {
             Err(Stop::Failed(error)) => Outcome::Failed(error),
             Err(Stop::Aborted) => Outcome::Aborted,
         };
-        let report = Report {
+        Report {
             task_id: task.id.clone(),
             outcome,
-            hold_failed: hold_verified(ros, true).err(),
+            hold_failed: episode.stop().err(),
             counts: episode.counts,
             duration: episode.started.elapsed(),
-        };
-        episode.publish(|progress| progress.duration = Some(report.duration));
-        report
+        }
     }
 
     fn publish(&self, update: impl FnOnce(&mut Progress)) {
@@ -173,42 +158,20 @@ impl<'a> Episode<'a> {
 
     fn step_loop(&mut self) -> Result<(), Stop> {
         self.q_cmd = self.measured_arm()?;
-        if !self
-            .q_cmd
-            .iter()
-            .enumerate()
-            .all(|(j, q)| q.abs() <= joint_limit(j))
-        {
-            return Err(eyre!("initial measured target exceeds mock joint limits").into());
-        }
-        self.gripper_target = self.observe()?.gripper;
         while self.counts.steps < STEPS {
-            self.check()?;
-            let mut actions = self.act()?;
-            motion::clip_chunk(self.q_cmd, &mut actions);
+            let actions = self.act()?;
             let remaining = (STEPS - self.counts.steps) as usize;
             for action in actions.into_iter().take(remaining) {
                 self.check()?;
-                let motion = motion::integrate(self.q_cmd, action.delta);
-                let target = motion.target;
                 let issued = Instant::now();
+                let target = std::array::from_fn(|joint| self.q_cmd[joint] + action.delta[joint]);
                 self.ros.send_trajectory(&[target], STEP)?;
-                self.ros.command_finger(gripper::finger(action.gripper))?;
+                self.commanded = true;
                 self.q_cmd = target;
-                self.gripper_target = action.gripper;
-                self.ros.log(format!(
-                    "episode={} step={} target={target:?} gripper={} requested_tcp_m_s={:.5} requested_elbow_m_s={:.5} speed_scale={:.6}",
-                    self.id, self.counts.steps, action.gripper, motion.tcp_speed, motion.elbow_speed, motion.scale
-                ));
+                self.ros.command_finger(gripper::finger(action.gripper))?;
                 self.counts.steps += 1;
                 self.publish(|p| p.counts = self.counts);
                 self.sleep_until(issued + STEP)?;
-                let measured = self.measured_arm()?;
-                let reference = self
-                    .ros
-                    .reference()
-                    .ok_or_else(|| eyre!("controller reference lost after command"))?;
-                self.ros.log(format!("episode={} step={} measured={measured:?} controller_reference={:?} error={:.5}",self.id,self.counts.steps-1,reference.value,crate::worker::max_error(measured,self.q_cmd)));
             }
         }
         Ok(())
@@ -225,18 +188,11 @@ impl<'a> Episode<'a> {
             task_id: &self.task.id,
             instruction: &self.task.instruction,
             schema_version: SCHEMA_VERSION,
-            images: self.ros.images(&self.id, self.counts.steps)?,
+            images: self.ros.images()?,
             goal: &self.task.goal,
             proprio: self.observe()?,
         };
-        // Single-point trajectories end at zero velocity. Keep that absolute target while the
-        // HTTP future is pending; dropping the future cancels transport on stop or feedback loss.
         self.check()?;
-        self.ros.hold(&self.q_cmd)?;
-        self.ros.log(format!(
-            "episode={} step={} holding while awaiting policy",
-            self.id, self.counts.steps
-        ));
         let sent = Instant::now();
         let result = self.policy.runtime.block_on(async {
             let call = self.policy.act(&request, remaining);
@@ -263,21 +219,19 @@ impl<'a> Episode<'a> {
         if self.counts.http >= BUDGET {
             return Err(eyre!("cumulative policy HTTP budget exhausted").into());
         }
-        match result {
-            Ok(actions) => Ok(actions),
-            Err(ActError::Invalid(_)) => {
-                self.counts.holds += 1;
-                self.ros.log(format!(
-                    "episode={} step={} invalid reply; one hold step",
-                    self.id, self.counts.steps
-                ));
-                Ok(vec![Action {
-                    delta: [0.0; 6],
-                    gripper: self.gripper_target,
-                }])
-            }
-            Err(ActError::Transport(reason)) => Err(reason.into()),
+        result.map_err(|error| eyre::Report::new(error).into())
+    }
+
+    fn stop(&self) -> Result<()> {
+        if self.commanded {
+            let position = self
+                .ros
+                .arm()
+                .filter(Received::is_fresh)
+                .map_or(self.q_cmd, |arm| arm.value.position);
+            self.ros.hold(&position)?;
         }
+        Ok(())
     }
 
     fn observe(&self) -> Result<Proprio> {

@@ -37,19 +37,17 @@ Start the three processes separately:
 
 3. In the second Whistle terminal, use the same overlays and discovery
    settings. Use a writable Cargo target and a prepared registry cache if the
-   environment has no internet access. Set the event log to a writable private
-   location.
+   environment has no internet access.
 
    ```sh
    export WHISTLE_MODE=mock
    export WHISTLE_POLICY_URL=http://whistle-policy:8080
    export WHISTLE_TASK_PACK="$PWD/task-packs/simulator/manifest.json"
-   export WHISTLE_EVENT_LOG=/evidence/runner.jsonl
    cargo run --release --locked -p policy-runner -- --task bolt_to_tray
    ```
 
-Press Enter to request the saved mock start pose. Once the TUI reports arrival
-and all inputs are ready, press Enter again to start. Esc requests stop and
+Press Enter to request the saved mock start pose. Once the TUI reports arrival,
+press Enter again to start the selected task. Esc requests stop and
 hold. Press `q` while idle to quit. The public task pack contains simulator
 goal images for the two public tasks. The live camera images do not change in
 response to mock motion.

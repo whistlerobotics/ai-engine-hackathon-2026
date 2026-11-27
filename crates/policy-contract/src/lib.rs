@@ -4,7 +4,6 @@
 pub mod gripper;
 pub mod image;
 pub mod kinematics;
-mod strict_json;
 pub mod wire;
 
 use std::time::Duration;

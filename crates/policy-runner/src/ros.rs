@@ -59,7 +59,6 @@ pub struct Ros {
     speed_scaling: Latest<f64>,
     gripper_hardware: Arc<Mutex<Option<GripperHardware>>>,
     cameras: [Latest<Frame>; 3],
-    log: Arc<Log>,
     mock_arm: Arc<Mutex<bool>>,
     mock_gripper: Arc<Mutex<bool>>,
     controller_active: Arc<Mutex<bool>>,
@@ -76,7 +75,6 @@ pub struct Ros {
 struct Frame {
     bytes: Arc<[u8]>,
     capture: Duration,
-    receipt: Duration,
 }
 
 fn epoch() -> Duration {
@@ -212,13 +210,11 @@ impl Ros {
         )?;
         let cameras: [Latest<Frame>; 3] = std::array::from_fn(|_| Latest::default());
         let mut subscriptions = Vec::new();
-        for ((topic, frame), role) in topics.into_iter().zip(&cameras).zip(ROLES) {
-            log.push(format!("{role} camera topic {topic}"));
+        for (topic, frame) in topics.into_iter().zip(&cameras) {
             let frame = Arc::clone(frame);
             subscriptions.push(node.create_subscription(
                 topic.best_effort().keep_last(1),
                 move |msg: CompressedImage| {
-                    let receipt = epoch();
                     if timestamp_fresh(msg.header.stamp.sec, msg.header.stamp.nanosec) {
                         let capture =
                             Duration::new(msg.header.stamp.sec as u64, msg.header.stamp.nanosec);
@@ -227,7 +223,6 @@ impl Ros {
                             Frame {
                                 bytes: msg.data.into(),
                                 capture,
-                                receipt,
                             },
                         );
                     }
@@ -251,7 +246,6 @@ impl Ros {
             speed_scaling,
             gripper_hardware,
             cameras,
-            log,
             mock_arm,
             mock_gripper,
             controller_active,
@@ -292,10 +286,6 @@ impl Ros {
         *self.gripper_hardware.lock()
     }
 
-    pub fn log(&self, event: impl Into<String>) {
-        self.log.push(event);
-    }
-
     pub fn camera_live(&self) -> [bool; 3] {
         camera_health(&self.cameras)
     }
@@ -329,22 +319,17 @@ impl Ros {
         self.frames().map(|_| ())
     }
 
-    pub fn images(&self, episode: &str, step: u32) -> Result<Images> {
-        let frames = self.frames()?;
-        let mut encoded = Vec::new();
-        for (role, frame) in ROLES.into_iter().zip(frames) {
+    pub fn images(&self) -> Result<Images> {
+        let [wrist, left, right] = self.frames()?;
+        let encode = |role: &str, frame: Received<Frame>| {
             check_policy_jpeg(&frame.value.bytes).map_err(|e| eyre!("{role} camera: {e}"))?;
-            self.log(format!(
-                "episode={episode} step={step} camera={role} capture_ns={} receipt_ns={}",
-                frame.value.capture.as_nanos(),
-                frame.value.receipt.as_nanos()
-            ));
-            encoded.push(BASE64.encode(&frame.value.bytes));
-        }
-        let [wrist, left, right] = encoded
-            .try_into()
-            .map_err(|_| eyre!("three named images required"))?;
-        Ok(Images { wrist, left, right })
+            Ok::<_, color_eyre::Report>(BASE64.encode(&frame.value.bytes))
+        };
+        Ok(Images {
+            wrist: encode("wrist", wrist)?,
+            left: encode("left", left)?,
+            right: encode("right", right)?,
+        })
     }
 
     fn isolated_arm(&self) -> bool {
@@ -557,7 +542,6 @@ mod tests {
             &frames[index],
             Frame {
                 bytes: Arc::from([]),
-                receipt,
                 capture: receipt,
             },
         );
@@ -570,7 +554,6 @@ mod tests {
             &frames[index],
             Frame {
                 bytes: Arc::from([]),
-                receipt,
                 capture: receipt,
             },
         );

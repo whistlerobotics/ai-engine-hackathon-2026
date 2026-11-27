@@ -57,25 +57,6 @@ pub struct PolicyStatus {
     pub readiness: Readiness,
 }
 
-/// reqwest keeps the URL at the head of its error chain. The TUI leads with the
-/// transport cause, while the timestamped log retains the complete chain.
-pub fn connection_reason(detail: &str) -> &str {
-    let lower = detail.to_ascii_lowercase();
-    if lower.contains("refused") {
-        return "Connection refused";
-    }
-    if lower.contains("dns") || lower.contains("failed to lookup") {
-        return "Policy hostname lookup failed";
-    }
-    if lower.contains("timed out") || lower.contains("timeout") {
-        return "Policy connection timed out";
-    }
-    detail
-        .rsplit(": ")
-        .next()
-        .unwrap_or("Policy connection failed")
-}
-
 impl fmt::Display for Health {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -228,9 +209,7 @@ impl Policy {
             .map_err(color_eyre::Report::new)?;
         let status = response.status().as_u16();
         if status != 200 {
-            return Err(ActError::Transport(color_eyre::eyre::eyre!(
-                "policy returned HTTP {status}"
-            )));
+            return Err(InvalidReply::Status(status).into());
         }
         let header = |name: &str| {
             let mut values = response.headers().get_all(name).iter();
@@ -242,7 +221,7 @@ impl Policy {
             step: header("X-RC-Step"),
         };
         let bytes = body_bytes(response, 2 * 1024 * 1024).await?;
-        let body = std::str::from_utf8(&bytes).map_err(|_| InvalidReply::Encoding)?;
+        let body = std::str::from_utf8(&bytes).map_err(color_eyre::Report::new)?;
         Ok(validate(body, &headers, request.episode_id, request.step)?)
     }
 }
@@ -371,7 +350,7 @@ mod http_tests {
             .runtime
             .block_on(client.act(&request, Duration::from_secs(1)))
             .unwrap();
-        assert_eq!(actions[0].delta, [0.05; 6]);
+        assert_eq!(actions[0].delta, [0.04; 6]);
         request.task_id = "slow";
         let timeout = client
             .runtime

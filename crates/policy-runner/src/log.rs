@@ -1,11 +1,6 @@
 use parking_lot::Mutex;
 use std::{
     collections::VecDeque,
-    fs::{File, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::OpenOptionsExt,
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -21,8 +16,6 @@ pub struct Line {
 /// The operator's log, newest last, keeping the latest `CAPACITY` lines.
 pub struct Log {
     started: Instant,
-    request: AtomicU64,
-    file: Mutex<Option<File>>,
     lines: Mutex<VecDeque<Line>>,
 }
 
@@ -30,34 +23,8 @@ impl Log {
     pub fn new() -> Self {
         Self {
             started: Instant::now(),
-            request: AtomicU64::new(0),
-            file: Mutex::new(None),
             lines: Mutex::new(VecDeque::with_capacity(CAPACITY)),
         }
-    }
-
-    pub fn open(path: &Path) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)?;
-        let log = Self::new();
-        *log.file.lock() = Some(file);
-        Ok(log)
-    }
-
-    pub fn begin_request(&self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        self.request
-            .store(u64::try_from(now).unwrap_or(u64::MAX), Ordering::SeqCst);
-    }
-
-    pub fn end_request(&self) {
-        self.request.store(0, Ordering::SeqCst);
     }
 
     pub fn push(&self, text: impl Into<String>) {
@@ -65,18 +32,6 @@ impl Log {
             at: self.started.elapsed(),
             text: text.into(),
         };
-        let mut line = line;
-        if let Some(file) = self.file.lock().as_mut() {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let id = self.request.load(Ordering::SeqCst);
-            let record = serde_json::json!({"utc_ns":stamp.to_string(),"request_id":(id!=0).then(||id.to_string()),"event":&line.text});
-            if let Err(error) = writeln!(file, "{record}").and_then(|()| file.flush()) {
-                line.text = format!("Event log write failed: {error} / {}", line.text);
-            }
-        }
         let mut lines = self.lines.lock();
         if lines.len() == CAPACITY {
             lines.pop_front();

@@ -1,4 +1,4 @@
-use crate::{Joints, STEP};
+use crate::Joints;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_8, PI};
 
@@ -98,39 +98,15 @@ impl PalmPose {
     }
 }
 
-/// Commanded palm and elbow speeds in m/s, using the position Jacobians at the clipped target.
-#[must_use]
-pub fn palm_elbow_speeds(target: &Joints, delta: &Joints) -> (f64, f64) {
-    let mut frame = dh_base();
-    let mut angular = Vector3::zeros();
-    let mut linear = Vector3::zeros();
-    let mut elbow = Vector3::zeros();
-    for (joint, link) in UR12E.iter().enumerate() {
-        angular += frame.rotation * Vector3::z() * delta[joint];
-        let next = frame * dh_transform(link, target[joint]);
-        linear += angular.cross(&(next.translation.vector - frame.translation.vector));
-        frame = next;
-        if joint == 1 {
-            elbow = linear; // DH frame 2 is the simulator's forearm_link origin.
-        }
-    }
-    let palm = linear + angular.cross(&(frame.rotation * Vector3::z() * V3_PALM_IN_TOOL0_Z));
-    let dt = STEP.as_secs_f64();
-    (palm.norm() / dt, elbow.norm() / dt)
-}
-
-fn dh_base() -> Isometry3<f64> {
-    Isometry3::from_parts(
+fn tool0_pose(joints: &Joints) -> Isometry3<f64> {
+    let base_link_to_base = Isometry3::from_parts(
         Translation3::identity(),
         UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI),
-    )
-}
-
-fn tool0_pose(joints: &Joints) -> Isometry3<f64> {
+    );
     UR12E
         .iter()
         .zip(joints)
-        .fold(dh_base(), |pose, (link, &theta)| {
+        .fold(base_link_to_base, |pose, (link, &theta)| {
             pose * dh_transform(link, theta)
         })
 }

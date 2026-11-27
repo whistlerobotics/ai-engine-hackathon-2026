@@ -4,7 +4,7 @@ use crate::{
     log::Log,
     policy::{Health, PolicyStatus, Readiness},
     ros::{ROLES, Received, Ros},
-    worker::{TOLERANCE, max_error},
+    worker::{TOLERANCE, distance_to_start},
 };
 use parking_lot::Mutex;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -79,7 +79,7 @@ pub struct Robot {
 }
 
 impl Robot {
-    pub fn read(ros: &Ros, start: policy_contract::Joints) -> Self {
+    pub fn read(ros: &Ros) -> Self {
         let arm = ros.arm().filter(Received::is_fresh);
         Self {
             arm_live: arm.is_some(),
@@ -87,7 +87,7 @@ impl Robot {
             camera_live: ros.camera_live(),
             controller_live: ros.controller_ready(),
             gripper_controller_live: ros.gripper_ready(),
-            at_start: arm.is_some_and(|arm| max_error(arm.value.position, start) <= TOLERANCE),
+            at_start: arm.is_some_and(|arm| distance_to_start(&arm.value.position) <= TOLERANCE),
             speed_scaling: ros
                 .speed_scaling()
                 .filter(Received::is_fresh)
@@ -152,7 +152,6 @@ pub struct App<'a> {
     pub shared: &'a Shared,
     commands: Sender<Command>,
     pub policy_url: String,
-    pub task_error: Option<String>,
     pub task_id: String,
     /// The new task being typed.
     pub editing: Option<String>,
@@ -170,7 +169,6 @@ impl<'a> App<'a> {
             shared,
             commands,
             policy_url,
-            task_error: None,
             task_id,
             editing: None,
             quit: false,
@@ -185,10 +183,7 @@ impl<'a> App<'a> {
                 let task_id = self.task_id.clone();
                 self.send(Command::RunEpisode { task_id }, Phase::Running, robot);
             }
-            Action::Abort => {
-                self.shared.cancel.store(true, Ordering::Relaxed);
-                self.shared.log.push("Operator requested abort");
-            }
+            Action::Abort => self.shared.cancel.store(true, Ordering::Relaxed),
             Action::Quit => self.quit = true,
             Action::EditTask => self.editing = Some(String::new()),
             Action::TypeTask(c) => self.editing.iter_mut().for_each(|task| task.push(c)),
@@ -207,14 +202,9 @@ impl<'a> App<'a> {
             return;
         }
         self.shared.cancel.store(false, Ordering::Relaxed);
-        self.shared.log.begin_request();
         *self.shared.phase.lock() = phase;
-        self.shared
-            .log
-            .push(format!("Operator requested phase={phase:?}"));
         if self.commands.send(command).is_err() {
             self.shared.log.push("The arm worker has stopped.");
-            self.shared.log.end_request();
         }
     }
 
@@ -224,9 +214,6 @@ impl<'a> App<'a> {
         let episode = matches!(command, Command::RunEpisode { .. });
         let mut reasons = Vec::new();
         if episode {
-            if let Some(reason) = &self.task_error {
-                reasons.push(reason.clone());
-            }
             if !robot.at_start && robot.arm_live {
                 reasons.push("arm is outside start tolerance".to_owned());
             }

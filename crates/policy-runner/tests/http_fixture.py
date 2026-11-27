@@ -38,7 +38,7 @@ class Handler(BaseHTTPRequestHandler):
         reply = {
             "episode_id": request["episode_id"],
             "step": request["step"],
-            "action": {"type": "joint_delta", "values": [0.1] * 6, "gripper": 1},
+            "action": {"type": "joint_delta", "values": [0.04] * 6, "gripper": 1},
         }
         try:
             self.reply(reply, [
