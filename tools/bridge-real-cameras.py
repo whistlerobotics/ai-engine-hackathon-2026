@@ -140,10 +140,9 @@ def main():
     expected = "42" if args.mode == "export" else "77"
     if os.environ.get("ROS_DOMAIN_ID") != expected:
         parser.error(f"{args.mode} requires ROS domain {expected}")
-    if expected == "77":
-        # Kilted LOCALHOST discovery adds SHM transports even when UDPv4 is requested.
-        os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SYSTEM_DEFAULT"
-        os.environ["FASTDDS_DEFAULT_PROFILES_FILE"] = str(Path(__file__).with_name("mock-fastdds.xml"))
+    # Both ends need UDP: camera restarts can strand existing LOCALHOST SHM readers.
+    os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SYSTEM_DEFAULT"
+    os.environ["FASTDDS_DEFAULT_PROFILES_FILE"] = str(Path(__file__).with_name("mock-fastdds.xml"))
     guard = None
     if args.mode != "check":
         lock = args.socket.with_suffix(".lock") if args.mode == "export" else Path("/tmp/mock-cameras-import.lock")
