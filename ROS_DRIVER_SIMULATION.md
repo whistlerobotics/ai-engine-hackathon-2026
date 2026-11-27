@@ -1,5 +1,69 @@
 # ROS driver simulation on Spark
 
+## Schema v3 mock run
+
+Use a dedicated mock runner environment with ROS Kilted, the Robotiq and
+Orbbec overlays, and Whistle's checkout. Attach it and the policy to a shared
+internal container network. Do not mount physical robot devices in the mock
+environment. Use Joe's camera-only exporter and importer to bring the three
+feeds into the mock environment. The mock processes share ROS domain 77 inside
+the runner environment, and the checked-in Fast DDS profile restricts their
+discovery and traffic to loopback. Attach the local display to the mock runner
+environment for RViz.
+
+Start the three processes separately:
+
+1. In the policy environment, mount a server certificate and key and start the
+   example policy. Its certificate needs a DNS SAN for its service name
+   (`whistle-policy` in this example).
+
+   ```sh
+   python3 test-policy.py --bind 0.0.0.0 --port 8080 \
+     --tls-cert /run/policy/server.pem --tls-key /run/policy/server-key.pem \
+     --amplitude 0.02 --joints 5 --chunk 4
+   ```
+
+2. In the Whistle ROS environment, source the ROS overlays and configure
+   discovery for both the ROS and Cargo terminals. Run from the checkout root.
+
+   ```sh
+   export ROS_DOMAIN_ID=77 ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT
+   export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+   export FASTDDS_DEFAULT_PROFILES_FILE="$PWD/tools/mock-fastdds.xml"
+   mise run mock-robot robot_ip:=127.0.0.1 headless_mode:=false \
+     camera:=false hand_guiding:=false rviz:=true
+   ```
+
+   `rviz:=true` uses Joe's mock view with the arm, gripper, and the three
+   independent live camera panels. Leave this terminal running.
+
+3. In the second Whistle terminal, use the same overlays and discovery
+   settings. Use a writable Cargo target and a prepared registry cache if the
+   environment has no internet access. Mount the CA certificate read-only and
+   set the event log to a writable private location.
+
+   ```sh
+   export WHISTLE_MODE=mock
+   export WHISTLE_POLICY_URL=https://whistle-policy:8080
+   export WHISTLE_POLICY_CA=/run/whistle/ca.pem
+   export WHISTLE_TASK_PACK="$PWD/task-packs/simulator/manifest.json"
+   export WHISTLE_EVENT_LOG=/evidence/runner.jsonl
+   cargo run --release --locked -p policy-runner -- --task bolt_to_tray
+   ```
+
+Press Enter to request the saved mock start pose. Once the TUI reports arrival
+and all inputs are ready, press Enter again to start. Esc requests stop and
+hold. Press `q` while idle to quit. The public task pack contains simulator
+goal images for the two public tasks. The live camera images do not change in
+response to mock motion.
+
+## Earlier schema v2 Spark launches
+
+The host scripts and Qwen integration below describe Joe's original
+schema v2 checkout. Run them with that checkout and its compiled runner.
+The v3 runner speaks directly to its policy server, with no policy adapter
+in the request path.
+
 On Spark, open the mock driver runner with:
 
 ```bash

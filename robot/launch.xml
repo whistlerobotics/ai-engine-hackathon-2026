@@ -16,7 +16,7 @@
   <let name="ur_overrides" value="$(dirname)/ur_overrides.yaml"/>
   <let name="gripper_controllers" value="$(dirname)/gripper_controllers.yaml"/>
   <let name="gripper_xacro" value="$(dirname)/gripper.urdf.xacro"/>
-  <let name="rviz_config" value="$(dirname)/view.rviz"/>
+  <arg name="rviz_config" default="$(dirname)/view.rviz" description="RViz display configuration"/>
   <let name="hand_guiding_bin" value="$(dirname)/../target/release/hand-guiding"/>
 
   <include file="$(find-pkg-share ur_robot_driver)/launch/ur_control.launch.py">

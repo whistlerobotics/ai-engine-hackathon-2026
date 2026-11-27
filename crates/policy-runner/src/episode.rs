@@ -1,6 +1,9 @@
 use crate::{
+    motion,
     policy::{ActError, Policy},
     ros::{Received, Ros},
+    task::{Task, joint_limit},
+    worker::hold_verified,
 };
 use color_eyre::{
     Result,
@@ -9,7 +12,7 @@ use color_eyre::{
 use parking_lot::Mutex;
 use policy_contract::{
     Joints, SCHEMA_VERSION, STEP, gripper, kinematics,
-    wire::{ActRequest, Action, Images, Proprio},
+    wire::{ActRequest, Action, Proprio},
 };
 use std::{
     fmt,
@@ -18,15 +21,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const STEPS: u32 = 600;
-pub const BUDGET: Duration = Duration::from_secs(45);
+pub const STEPS: u32 = 1200;
+pub const BUDGET: Duration = Duration::from_secs(90);
 pub const MAX_TRACKING_ERROR: f64 = 0.25;
 /// How often a sleep checks for Ctrl-C and the budget.
 const SLEEP_SLICE: Duration = Duration::from_millis(5);
-/// Connection errors return at once; this keeps a policy that is down from being called in a
-/// tight loop.
-const MIN_RETRY_INTERVAL: Duration = Duration::from_millis(20);
-
 pub enum Outcome {
     Completed,
     Failed(eyre::Report),
@@ -46,14 +45,15 @@ pub struct Report {
 pub struct Counts {
     pub steps: u32,
     pub late: u32,
-    pub retries: u32,
+    pub holds: u32,
+    pub http: Duration,
 }
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: ", self.task_id)?;
         match &self.outcome {
-            Outcome::Completed => write!(f, "Completed")?,
+            Outcome::Completed => write!(f, "Step limit reached")?,
             Outcome::Failed(error) => write!(f, "Failed: {error:#}")?,
             Outcome::Aborted => write!(f, "Aborted")?,
         }
@@ -62,11 +62,12 @@ impl fmt::Display for Report {
         }
         write!(
             f,
-            "; {} steps in {:.2} s, {} late replies, {} retries",
+            "; {} steps, {:.2} s wall, {:.2} s action, {:.2} s HTTP, {} held steps",
             self.counts.steps,
             self.duration.as_secs_f64(),
-            self.counts.late,
-            self.counts.retries
+            (STEP * self.counts.steps).as_secs_f64(),
+            self.counts.http.as_secs_f64(),
+            self.counts.holds
         )
     }
 }
@@ -115,12 +116,13 @@ impl From<eyre::Report> for Stop {
 pub struct Episode<'a> {
     ros: &'a Ros,
     policy: &'a Policy,
-    task_id: &'a str,
+    task: &'a Task,
     cancel: &'a AtomicBool,
     progress: &'a Mutex<Option<Progress>>,
     id: String,
     started: Instant,
     q_cmd: Joints,
+    gripper_target: f64,
     counts: Counts,
 }
 
@@ -130,7 +132,7 @@ impl<'a> Episode<'a> {
     pub fn run(
         ros: &'a Ros,
         policy: &'a Policy,
-        task_id: &'a str,
+        task: &'a Task,
         cancel: &'a AtomicBool,
         progress: &'a Mutex<Option<Progress>>,
     ) -> Report {
@@ -138,12 +140,13 @@ impl<'a> Episode<'a> {
         let mut episode = Self {
             ros,
             policy,
-            task_id,
+            task,
             cancel,
             progress,
             id: episode_id(),
             started: Instant::now(),
             q_cmd: [0.0; 6],
+            gripper_target: 0.0,
             counts: Counts::default(),
         };
         let outcome = match episode.step_loop() {
@@ -152,9 +155,9 @@ impl<'a> Episode<'a> {
             Err(Stop::Aborted) => Outcome::Aborted,
         };
         let report = Report {
-            task_id: task_id.to_owned(),
+            task_id: task.id.clone(),
             outcome,
-            hold_failed: episode.stop().err(),
+            hold_failed: hold_verified(ros, true).err(),
             counts: episode.counts,
             duration: episode.started.elapsed(),
         };
@@ -170,82 +173,110 @@ impl<'a> Episode<'a> {
 
     fn step_loop(&mut self) -> Result<(), Stop> {
         self.q_cmd = self.measured_arm()?;
-        // The first action, like every other, starts one step after its observation.
-        let mut next_start = Instant::now() + STEP;
-
-        while self.counts.steps < STEPS {
-            let actions = self.act()?;
-            let now = Instant::now();
-            let start = if now > next_start {
-                self.counts.late += 1;
-                now
-            } else {
-                next_start
-            };
-
-            let remaining = usize::try_from(STEPS - self.counts.steps).unwrap_or(usize::MAX);
-            let actions = &actions[..actions.len().min(remaining)];
-            let mut targets = Vec::with_capacity(actions.len());
-            let mut q = self.q_cmd;
-            for action in actions {
-                for (joint, delta) in q.iter_mut().zip(action.delta) {
-                    *joint += delta;
-                }
-                targets.push(q);
-            }
-
-            for (i, action) in (0_u32..).zip(actions) {
-                self.sleep_until(start + STEP * i)?;
-                if i == 0 {
-                    self.ros.send_steps(&self.q_cmd, &targets, STEP)?;
-                    self.q_cmd = q;
-                }
-                self.ros.command_finger(gripper::finger(action.gripper))?;
-                self.counts.steps += 1;
-                self.publish(|progress| progress.counts = self.counts);
-            }
-            next_start = start + STEP * u32::try_from(actions.len()).unwrap_or(u32::MAX);
+        if !self
+            .q_cmd
+            .iter()
+            .enumerate()
+            .all(|(j, q)| q.abs() <= joint_limit(j))
+        {
+            return Err(eyre!("initial measured target exceeds mock joint limits").into());
         }
-        // Lets the last action run its 50 ms before holding.
-        self.sleep_until(next_start)
+        self.gripper_target = self.observe()?.gripper;
+        while self.counts.steps < STEPS {
+            self.check()?;
+            let mut actions = self.act()?;
+            motion::clip_chunk(self.q_cmd, &mut actions);
+            let remaining = (STEPS - self.counts.steps) as usize;
+            for action in actions.into_iter().take(remaining) {
+                self.check()?;
+                let motion = motion::integrate(self.q_cmd, action.delta);
+                let target = motion.target;
+                let issued = Instant::now();
+                self.ros.send_trajectory(&[target], STEP)?;
+                self.ros.command_finger(gripper::finger(action.gripper))?;
+                self.q_cmd = target;
+                self.gripper_target = action.gripper;
+                self.ros.log(format!(
+                    "episode={} step={} target={target:?} gripper={} requested_tcp_m_s={:.5} requested_elbow_m_s={:.5} speed_scale={:.6}",
+                    self.id, self.counts.steps, action.gripper, motion.tcp_speed, motion.elbow_speed, motion.scale
+                ));
+                self.counts.steps += 1;
+                self.publish(|p| p.counts = self.counts);
+                self.sleep_until(issued + STEP)?;
+                let measured = self.measured_arm()?;
+                let reference = self
+                    .ros
+                    .reference()
+                    .ok_or_else(|| eyre!("controller reference lost after command"))?;
+                self.ros.log(format!("episode={} step={} measured={measured:?} controller_reference={:?} error={:.5}",self.id,self.counts.steps-1,reference.value,crate::worker::max_error(measured,self.q_cmd)));
+            }
+        }
+        Ok(())
     }
 
-    /// Observes and calls the policy for the current step, again on timeouts and connection
-    /// errors, until a reply arrives or the budget runs out.
     fn act(&mut self) -> Result<Vec<Action>, Stop> {
-        loop {
-            self.check_cancel_and_budget()?;
-            let attempt = Instant::now();
-            let proprio = self.observe()?;
-            let request = ActRequest {
-                episode_id: &self.id,
-                step: self.counts.steps,
-                task_id: self.task_id,
-                schema_version: SCHEMA_VERSION,
-                images: Images {
-                    top: self.ros.image()?,
-                },
-                proprio,
-            };
-            let sent = Instant::now();
-            match self.policy.act(&request) {
-                Ok(actions) => {
-                    self.check_cancel_and_budget()?;
-                    let _ = self.observe()?;
-                    self.publish(|progress| progress.latencies.push(sent.elapsed()));
-                    return Ok(actions);
-                }
-                Err(ActError::Transient(_)) => {
-                    self.counts.retries += 1;
-                    self.publish(|progress| progress.counts = self.counts);
-                    self.sleep_until(attempt + MIN_RETRY_INTERVAL)?;
-                }
-                Err(error @ ActError::Invalid(_)) => {
-                    return Err(eyre::Report::new(error)
-                        .wrap_err(format!("step {}", self.counts.steps))
-                        .into());
+        let remaining = BUDGET.saturating_sub(self.counts.http);
+        if remaining.is_zero() {
+            return Err(eyre!("cumulative policy HTTP budget exhausted").into());
+        }
+        let request = ActRequest {
+            episode_id: &self.id,
+            step: self.counts.steps,
+            task_id: &self.task.id,
+            instruction: &self.task.instruction,
+            schema_version: SCHEMA_VERSION,
+            images: self.ros.images(&self.id, self.counts.steps)?,
+            goal: &self.task.goal,
+            proprio: self.observe()?,
+        };
+        // Single-point trajectories end at zero velocity. Keep that absolute target while the
+        // HTTP future is pending; dropping the future cancels transport on stop or feedback loss.
+        self.check()?;
+        self.ros.hold(&self.q_cmd)?;
+        self.ros.log(format!(
+            "episode={} step={} holding while awaiting policy",
+            self.id, self.counts.steps
+        ));
+        let sent = Instant::now();
+        let result = self.policy.runtime.block_on(async {
+            let call = self.policy.act(&request, remaining);
+            tokio::pin!(call);
+            loop {
+                tokio::select! {
+                    biased;
+                    () = tokio::time::sleep(SLEEP_SLICE) => self.check()?,
+                    result=&mut call => break Ok::<_,Stop>(result),
                 }
             }
+        });
+        let duration = sent.elapsed();
+        self.counts.http += duration;
+        if duration > STEP {
+            self.counts.late += 1;
+        }
+        self.publish(|p| {
+            p.latencies.push(duration);
+            p.counts = self.counts;
+        });
+        let result = result?;
+        self.check()?;
+        if self.counts.http >= BUDGET {
+            return Err(eyre!("cumulative policy HTTP budget exhausted").into());
+        }
+        match result {
+            Ok(actions) => Ok(actions),
+            Err(ActError::Invalid(_)) => {
+                self.counts.holds += 1;
+                self.ros.log(format!(
+                    "episode={} step={} invalid reply; one hold step",
+                    self.id, self.counts.steps
+                ));
+                Ok(vec![Action {
+                    delta: [0.0; 6],
+                    gripper: self.gripper_target,
+                }])
+            }
+            Err(ActError::Transport(reason)) => Err(reason.into()),
         }
     }
 
@@ -288,7 +319,7 @@ impl<'a> Episode<'a> {
 
     fn sleep_until(&self, deadline: Instant) -> Result<(), Stop> {
         loop {
-            self.check_cancel_and_budget()?;
+            self.check()?;
             let now = Instant::now();
             if now >= deadline {
                 return Ok(());
@@ -297,13 +328,18 @@ impl<'a> Episode<'a> {
         }
     }
 
-    fn check_cancel_and_budget(&self) -> Result<(), Stop> {
+    fn check(&self) -> Result<(), Stop> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Stop::Aborted);
         }
-        if self.started.elapsed() > BUDGET {
-            return Err(eyre!("not completed within {} s", BUDGET.as_secs()).into());
+        if !self.ros.controller_ready() || !self.ros.gripper_ready() {
+            return Err(eyre!(
+                "mock controller inactive, feedback stale or command subscribers changed"
+            )
+            .into());
         }
+        self.ros.check_cameras()?;
+        self.observe()?;
         Ok(())
     }
 
@@ -312,12 +348,6 @@ impl<'a> Episode<'a> {
             Some(arm) if arm.is_fresh() => Ok(arm.value.position),
             _ => bail!("the arm's joint state is stale"),
         }
-    }
-
-    /// Holds the arm where it is; where it was last commanded, without a joint state.
-    fn stop(&self) -> Result<()> {
-        let position = self.ros.arm().map_or(self.q_cmd, |arm| arm.value.position);
-        self.ros.hold(&position)
     }
 }
 

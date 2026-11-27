@@ -1,4 +1,4 @@
-"""A stand-in policy server for the `/act` contract v0 (see API.md), standard library only.
+"""A stdlib stand-in policy server for schema v3 of the `/act` contract (see API.md).
 
 It swings the chosen joints sinusoidally about the start pose, by default only the wrists by
 ±0.1 rad over 5 s, opening and closing the gripper every 5 s. With --offset it instead moves the palm
@@ -12,6 +12,8 @@ import argparse
 import base64
 import json
 import math
+import os
+import ssl
 import threading
 import time
 from collections.abc import Callable
@@ -21,6 +23,10 @@ from typing import Any, override
 
 Reply = dict[str, Any]
 
+SCHEMA_VERSION = 3
+CAMERA_ROLES = ("wrist", "left", "right")
+PROPRIO_DIMENSIONS = {"joint_pos": 6, "joint_vel": 6, "ee_pos": 3, "ee_quat": 4}
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
 PERIOD_STEPS = 100
 STEP_S = 0.05
 MAX_DELTA = 0.05
@@ -28,21 +34,27 @@ MAX_DELTA = 0.05
 # its amplitude, and every delta must stay within the contract's MAX_DELTA.
 MAX_AMPLITUDE = MAX_DELTA / (2 * math.sin(math.pi / PERIOD_STEPS))
 
+
+def last_joint_delta(reply: Reply) -> Reply:
+    action = reply["action"]
+    return action["actions"][-1] if action["type"] == "action_chunk" else action
+
+
 # Each corrupts an otherwise valid reply, or its headers.
 INVALID_KINDS: dict[str, Callable[[Reply, dict[str, str]], object]] = {
-    "delta-out-of-range": lambda r, _: r["action"]["values"].__setitem__(0, 0.06),
-    "gripper-out-of-range": lambda r, _: r["action"].__setitem__("gripper", 1.5),
-    "five-values": lambda r, _: r["action"]["values"].pop(),
-    "missing-gripper": lambda r, _: r["action"].pop("gripper"),
-    "string-value": lambda r, _: r["action"]["values"].__setitem__(0, "0.0"),
-    "unknown-field": lambda r, _: r["action"].__setitem__("speed", 1.0),
-    "unknown-type": lambda r, _: r["action"].__setitem__("type", "cartesian"),
+    "delta-out-of-range": lambda r, _: last_joint_delta(r)["values"].__setitem__(0, 0.06),
+    "gripper-out-of-range": lambda r, _: last_joint_delta(r).__setitem__("gripper", 1.5),
+    "five-values": lambda r, _: last_joint_delta(r)["values"].pop(),
+    "missing-gripper": lambda r, _: last_joint_delta(r).pop("gripper"),
+    "string-value": lambda r, _: last_joint_delta(r)["values"].__setitem__(0, "0.0"),
+    "unknown-field": lambda r, _: last_joint_delta(r).__setitem__("speed", 1.0),
+    "unknown-type": lambda r, _: last_joint_delta(r).__setitem__("type", "cartesian"),
     "empty-chunk": lambda r, _: r.__setitem__("action", {"type": "action_chunk", "actions": []}),
     "long-chunk": lambda r, _: r.__setitem__(
-        "action", {"type": "action_chunk", "actions": [r["action"]] * 17}
+        "action", {"type": "action_chunk", "actions": [last_joint_delta(r)] * 17}
     ),
     "wrong-chunk-len": lambda r, _: r.__setitem__(
-        "action", {"type": "action_chunk", "chunk_len": 2, "actions": [r["action"]]}
+        "action", {"type": "action_chunk", "chunk_len": 2, "actions": [last_joint_delta(r)]}
     ),
     "wrong-episode-id": lambda r, _: r.__setitem__("episode_id", "other"),
     "wrong-step": lambda r, _: r.__setitem__("step", r["step"] + 1),
@@ -50,6 +62,79 @@ INVALID_KINDS: dict[str, Callable[[Reply, dict[str, str]], object]] = {
     "missing-episode-header": lambda _, h: h.pop("X-RC-Episode-Id"),
     "http-500": lambda _, h: h.__setitem__("status", "500"),
 }
+
+
+def finite_number(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def frame_dimensions(jpeg: bytes) -> tuple[int, int, int] | None:
+    if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+        return None
+    index = 2
+    while index + 4 < len(jpeg) and jpeg[index] == 0xFF:
+        index += 1
+        if jpeg[index] == 0xFF:  # Marker fill byte.
+            continue
+        marker = jpeg[index]
+        size = int.from_bytes(jpeg[index + 1:index + 3], "big")
+        if size < 2 or index + 1 + size > len(jpeg):
+            return None
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if size < 8 or jpeg[index + 3] != 8:
+                return None
+            height = int.from_bytes(jpeg[index + 4:index + 6], "big")
+            width = int.from_bytes(jpeg[index + 6:index + 8], "big")
+            components = jpeg[index + 8]
+            return (width, height, components) if size == 8 + 3 * components else None
+        index += size + 1
+    return None
+
+
+def validate_request(request: Any) -> None:
+    if not isinstance(request, dict):
+        raise ValueError("request must be a JSON object")
+    version = request.get("schema_version")
+    if type(version) is not int or version != SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    episode_id = request.get("episode_id")
+    if not isinstance(episode_id, str) or not episode_id or any(not 33 <= ord(c) <= 126 for c in episode_id):
+        raise ValueError("episode_id must be safe to echo in an HTTP header")
+    step = request.get("step")
+    if type(step) is not int or step < 0:
+        raise ValueError("step must be a nonnegative integer")
+    for field in ("task_id", "instruction"):
+        value = request.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a nonempty string")
+    for group in ("images", "goal"):
+        views = request.get(group)
+        if not isinstance(views, dict) or views.keys() != set(CAMERA_ROLES):
+            raise ValueError(f"{group} must contain wrist, left and right")
+        for view in CAMERA_ROLES:
+            value = views[view]
+            try:
+                if not isinstance(value, str) or frame_dimensions(base64.b64decode(value, validate=True)) != (640, 360, 3):
+                    raise ValueError()
+            except ValueError:
+                raise ValueError(f"{group}.{view} must contain a base64 640x360 RGB JPEG") from None
+    proprio = request.get("proprio")
+    if not isinstance(proprio, dict):
+        raise ValueError("proprio must be a JSON object")
+    for field, size in PROPRIO_DIMENSIONS.items():
+        values = proprio.get(field)
+        if not isinstance(values, list) or len(values) != size or not all(map(finite_number, values)):
+            raise ValueError(f"proprio.{field} must contain {size} finite numbers")
+    gripper = proprio.get("gripper")
+    if not finite_number(gripper) or not 0 <= gripper <= 1:
+        raise ValueError("proprio.gripper must be between 0 and 1")
+    if not math.isclose(math.hypot(*proprio["ee_quat"]), 1, abs_tol=1e-3):
+        raise ValueError("proprio.ee_quat must be a unit quaternion in wxyz order")
 
 
 def offset(step: int, amplitude: float) -> float:
@@ -80,14 +165,12 @@ UR12E_DH = [
     (0.11655, 0.0, 0.0),
 ]
 BASE_LINK_TO_BASE: Matrix = [[-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-BRACKET_TWIST = -math.pi / 8
-TOOL0_TO_GRIPPER_MOUNT: Matrix = [
-    [math.cos(BRACKET_TWIST), -math.sin(BRACKET_TWIST), 0, 0],
-    [math.sin(BRACKET_TWIST), math.cos(BRACKET_TWIST), 0, 0],
-    [0, 0, 1, 0.0244],
+TOOL0_TO_PALM: Matrix = [
+    [0, 1, 0, 0],
+    [-1, 0, 0, 0],
+    [0, 0, 1, 0.1314],
     [0, 0, 0, 1],
 ]
-GRIPPER_MOUNT_TO_PALM: Matrix = [[-1, 0, 0, 0], [0, 0, 1, 0.107], [0, 1, 0, 0], [0, 0, 0, 1]]
 
 GO_STEPS = 120
 HOLD_STEPS = 60
@@ -116,7 +199,7 @@ def palm_pose(q: Joints) -> Matrix:
     pose = BASE_LINK_TO_BASE
     for (d, a, alpha), theta in zip(UR12E_DH, q, strict=True):
         pose = matmul(pose, dh(d, a, alpha, theta))
-    return matmul(matmul(pose, TOOL0_TO_GRIPPER_MOUNT), GRIPPER_MOUNT_TO_PALM)
+    return matmul(pose, TOOL0_TO_PALM)
 
 
 def cross(u: list[float], v: list[float]) -> list[float]:
@@ -318,9 +401,7 @@ class Policy:
                     abs(a - b)
                     for a, b in zip(request["proprio"]["joint_pos"], replay.start, strict=True)
                 )
-                print(
-                    f"Episode {episode_id}: starting {mismatch:.4f} rad from the recording's start"
-                )
+                print(f"Starting {mismatch:.4f} rad from the recording's start")
         return replay.delta(step)
 
     def joint_delta(self, request: Reply, step: int) -> Reply:
@@ -338,15 +419,13 @@ class Policy:
                 mismatch = max(
                     abs(a - b) for a, b in zip(start, request["proprio"]["ee_pos"], strict=True)
                 )
-                print(
-                    f"Episode {episode_id}: palm at {[round(x, 4) for x in start]}, {mismatch * 1000:.2f} mm from ee_pos"
-                )
+                print(f"Palm position differs from ee_pos by {mismatch * 1000:.2f} mm")
             return path.delta(step)
 
     def act(self, request: Reply) -> tuple[Reply, dict[str, str]]:
         episode_id, step = request["episode_id"], request["step"]
         if self.args.log_requests:
-            print(f"{time.monotonic():.3f} {episode_id} {step} {request['task_id']}", flush=True)
+            print(f"{time.monotonic():.3f} /act step {step}", flush=True)
         with self.lock:
             first_attempt = (episode_id, step) not in self.seen
             self.seen.add((episode_id, step))
@@ -359,7 +438,9 @@ class Policy:
         time.sleep(delay / 1000)
 
         if self.args.save_image:
-            Path(self.args.save_image).write_bytes(base64.b64decode(request["images"]["top"]))
+            self.args.save_image.write_bytes(
+                base64.b64decode(request["images"][self.args.image_role])
+            )
 
         if self.args.chunk > 1:
             actions = [self.joint_delta(request, step + i) for i in range(self.args.chunk)]
@@ -389,17 +470,40 @@ class Handler(BaseHTTPRequestHandler):
             args = self.policy.args
             self.reply(
                 200,
-                {"ready": ready, "contract": args.contract, "schema_version": args.schema_version},
+                {"ready": ready, "contract": args.contract, "schema_version": args.schema_version,
+                 "capabilities": {"chunking": True, "caching": False}},
             )
         else:
             self.reply(404, {})
 
     def do_POST(self) -> None:
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if self.path != "/act":
+            self.close_connection = True
             self.reply(404, {})
             return
-        reply, headers = self.policy.act(json.loads(body))
+        if not self.policy.ready():
+            self.close_connection = True
+            self.reply(503, {"error": "policy is loading"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if not 0 < length <= MAX_REQUEST_BYTES:
+            self.close_connection = True
+            self.reply(400, {"error": "missing or invalid Content-Length"})
+            return
+        try:
+            request = json.loads(self.rfile.read(length))
+        except ValueError:
+            self.reply(400, {"error": "invalid JSON"})
+            return
+        try:
+            validate_request(request)
+        except ValueError as exc:
+            self.reply(400, {"error": str(exc)})
+            return
+        reply, headers = self.policy.act(request)
         status = int(headers.pop("status", "200"))
         self.reply(status, reply, headers)
 
@@ -411,20 +515,47 @@ class Handler(BaseHTTPRequestHandler):
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        _ = self.wfile.write(data)
+        try:
+            _ = self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     @override
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
 
+class PolicyServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    @override
+    def process_request_thread(self, request, client_address) -> None:
+        if isinstance(request, ssl.SSLSocket):
+            timeout = request.gettimeout()
+            request.settimeout(5)
+            try:
+                request.do_handshake()
+            except OSError as exc:
+                print(f"TLS handshake failed: {exc}", flush=True)
+                self.shutdown_request(request)
+                return
+            request.settimeout(timeout)
+        super().process_request_thread(request, client_address)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--port", type=int, default=8000)
+    _ = parser.add_argument("--bind", "--host", default="127.0.0.1", help="address to listen on")
+    _ = parser.add_argument("--tls-cert", default=os.environ.get("RC_POLICY_TLS_CERT"),
+                            help="PEM certificate chain (or RC_POLICY_TLS_CERT)")
+    _ = parser.add_argument("--tls-key", default=os.environ.get("RC_POLICY_TLS_KEY"),
+                            help="PEM private key (or RC_POLICY_TLS_KEY)")
     _ = parser.add_argument("--load-time", type=float, default=0.0, help="seconds until ready")
     _ = parser.add_argument("--contract", default="v0", help="the contract /readyz reports")
     _ = parser.add_argument(
-        "--schema-version", type=int, default=2, help="the schema version /readyz reports"
+        "--schema-version", type=int, default=SCHEMA_VERSION,
+        help="override only the schema version reported by /readyz to test mismatches",
     )
     _ = parser.add_argument(
         "--amplitude",
@@ -453,23 +584,39 @@ def main() -> None:
         "--slow-every", type=int, default=0, help="delay the first reply to every N-th step"
     )
     _ = parser.add_argument("--slow-delay", type=float, default=150.0, help="ms, with --slow-every")
-    _ = parser.add_argument("--chunk", type=int, default=1, help="actions per reply")
+    _ = parser.add_argument("--chunk", type=int, choices=range(1, 17), default=1, help="actions per reply")
     _ = parser.add_argument("--invalid", choices=sorted(INVALID_KINDS), help="corrupt every reply")
     _ = parser.add_argument(
         "--invalid-from", type=int, default=0, help="the first step to corrupt, with --invalid"
     )
     _ = parser.add_argument("--hang", action="store_true", help="never reply to /act")
-    _ = parser.add_argument("--log-requests", action="store_true", help="print each /act call")
-    _ = parser.add_argument("--save-image", help="write the last received image to this file")
+    _ = parser.add_argument("--log-requests", action="store_true", help="print time and step for each /act")
+    _ = parser.add_argument("--save-image", type=Path, help="write the latest live JPEG to this file")
+    _ = parser.add_argument("--image-role", choices=CAMERA_ROLES, default="wrist", help="live JPEG view to save")
     args = parser.parse_args()
     if args.replay is not None and args.offset is not None:
         parser.error("--replay and --offset are alternatives")
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("set both --tls-cert and --tls-key to serve HTTPS")
+
+    context = None
+    if args.tls_cert and args.tls_key:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        try:
+            context.load_cert_chain(args.tls_cert, args.tls_key, password="")
+        except (OSError, ValueError) as exc:
+            parser.error(f"cannot load TLS certificate and key: {exc}")
 
     Handler.policy = Policy(args)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    server.daemon_threads = True
-    print(f"Stand-in policy on http://127.0.0.1:{args.port}")
-    server.serve_forever()
+    with PolicyServer((args.bind, args.port), Handler) as server:
+        if context is not None:
+            server.socket = context.wrap_socket(
+                server.socket, server_side=True, do_handshake_on_connect=False
+            )
+        scheme = "https" if context is not None else "http"
+        print(f"Stand-in policy on {scheme}://{args.bind}:{server.server_port}", flush=True)
+        server.serve_forever()
 
 
 if __name__ == "__main__":

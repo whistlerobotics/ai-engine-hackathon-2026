@@ -1,0 +1,88 @@
+{
+  "schema_version": 3,
+  "revision": "sim-v3-ebcbfa49bddc1987",
+  "start_pose_rad": [
+    -3.1477,
+    -1.6507,
+    -2.4943,
+    -0.617,
+    1.4267,
+    -4.5194
+  ],
+  "tasks": [
+    {
+      "task_id": "bolt_and_nut_to_fixture",
+      "instruction": "Insert the bolt nearer the tray into the hole that matches its size, then seat the nut in the hex pocket that matches its size.",
+      "variant": "sim-0",
+      "seed": 0,
+      "wrist_pose_rad": [
+        -0.5729,
+        -1.8367,
+        1.9775,
+        -1.935,
+        -1.1251,
+        1.8863
+      ],
+      "goal": {
+        "wrist": {
+          "path": "bolt_and_nut_to_fixture/sim-0/wrist.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "d4d8b44d3105ca445848874bb11f03d9cb13e2b07d2f72c96cee2b86d75946bd"
+        },
+        "left": {
+          "path": "bolt_and_nut_to_fixture/sim-0/left.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "3d2472eff4dc341a6f5a31316ab9f21f3c68c8fb24b2565a3a803827dd51d047"
+        },
+        "right": {
+          "path": "bolt_and_nut_to_fixture/sim-0/right.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "3e50aa46d2e9216999e3a0b438766fb6d30cefe95a6f101606214a86a781d289"
+        }
+      }
+    },
+    {
+      "task_id": "bolt_to_tray",
+      "instruction": "Move the gold bolt to the tray.",
+      "variant": "sim-0",
+      "seed": 0,
+      "wrist_pose_rad": [
+        -0.5729,
+        -1.8367,
+        1.9775,
+        -1.935,
+        -1.1251,
+        1.8863
+      ],
+      "goal": {
+        "wrist": {
+          "path": "bolt_to_tray/sim-0/wrist.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "64d1037090b3fbc829e0bb0080b98aa89050cdc7047bad80a16f5a14d8cbf4e1"
+        },
+        "left": {
+          "path": "bolt_to_tray/sim-0/left.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "02fcdeb11e25be7b165c20418b3714d7b7a1787e16c4593bf38a467e74770f19"
+        },
+        "right": {
+          "path": "bolt_to_tray/sim-0/right.jpg",
+          "width": 640,
+          "height": 360,
+          "encoding": "jpeg",
+          "sha256": "233f8df300b04fe0e25e6c190d93f43d6898a05b7be34ac6e4907e652756b6e3"
+        }
+      }
+    }
+  ]
+}

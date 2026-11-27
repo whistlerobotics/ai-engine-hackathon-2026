@@ -1,7 +1,7 @@
 use crate::episode::{Episode, Image, RecordedProprio};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use color_eyre::{Result, eyre::eyre};
-use policy_contract::{ARM_JOINTS, SCHEMA_VERSION, STEP, image::BLACK_JPEG, wire::Images};
+use policy_contract::{ARM_JOINTS, STEP, image::BLACK_JPEG};
 use serde::Serialize;
 use std::{
     fs::{self, File},
@@ -19,6 +19,11 @@ struct Header<'a> {
     ended_by: &'a str,
     steps_without_image: u32,
     joint_names: [&'a str; 6],
+}
+
+#[derive(Serialize)]
+struct Images {
+    top: String,
 }
 
 #[derive(Serialize)]
@@ -45,7 +50,7 @@ pub fn save(episode: &Episode, out_dir: &Path, ended_by: &str) -> Result<PathBuf
     let header = Header {
         episode_id: &episode.id,
         task_id: &episode.task_id,
-        schema_version: SCHEMA_VERSION,
+        schema_version: 2,
         step_s: STEP.as_secs_f64(),
         started_at: &episode.started_at,
         ended_by,

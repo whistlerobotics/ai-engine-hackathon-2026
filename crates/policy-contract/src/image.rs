@@ -75,3 +75,20 @@ mod tests {
         check_jpeg(jpeg)
     }
 }
+
+/// Policy images have a different shape from the legacy recorder's single camera.
+pub fn check_policy_jpeg(bytes: &[u8]) -> Result<(), &'static str> {
+    use jpeg_decoder::{Decoder, PixelFormat};
+    if bytes.len() > 2 * 1024 * 1024 || !bytes.ends_with(&[0xff, 0xd9]) {
+        return Err("invalid or incomplete JPEG");
+    }
+    let mut decoder = Decoder::new(bytes);
+    decoder.set_max_decoding_buffer_size(640 * 360 * 4);
+    decoder.read_info().map_err(|_| "invalid JPEG header")?;
+    let info = decoder.info().ok_or("missing JPEG metadata")?;
+    if (info.width, info.height, info.pixel_format) != (640, 360, PixelFormat::RGB24) {
+        return Err("expected 640x360 RGB JPEG");
+    }
+    decoder.decode().map_err(|_| "invalid JPEG data")?;
+    Ok(())
+}

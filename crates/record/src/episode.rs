@@ -132,7 +132,7 @@ pub fn observe(ros: &Ros, now: Instant, permissive: bool) -> Result<Observation,
         Err(_) if permissive => Image::Black,
         Err(stale) => return Err(stale),
     };
-    let palm = kinematics::palm_pose(&arm.position);
+    let palm = kinematics::recorder_palm_pose(&arm.position);
     Ok(Observation {
         proprio: RecordedProprio {
             joint_pos: arm.position,
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn proprio_matches_contract() -> serde_json::Result<()> {
         let joint_pos = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        let palm = kinematics::palm_pose(&joint_pos);
+        let palm = kinematics::recorder_palm_pose(&joint_pos);
         let recorded = RecordedProprio {
             joint_pos,
             joint_vel: [0.0; 6],

@@ -1,4 +1,4 @@
-use crate::Joints;
+use crate::{Joints, STEP};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_8, PI};
 
@@ -49,6 +49,7 @@ const UR12E: [DhLink; 6] = [
 /// turned 22.5° from the flange's so that both can be bolted on, and the gripper turns with it.
 const BRACKET_THICKNESS: f64 = 0.0244;
 const BRACKET_TWIST: f64 = -FRAC_PI_8;
+const V3_PALM_IN_TOOL0_Z: f64 = 0.1314;
 
 /// Where the training simulation, whose gripper is bolted straight onto the flange, has the palm.
 const PALM_OFFSET_IN_GRIPPER_MOUNT: Vector3<f64> = Vector3::new(0.0, 0.107, 0.0);
@@ -63,6 +64,16 @@ pub struct PalmPose {
 /// The palm's pose in `base_link`, which is the DH base (`base`) turned 180° about z.
 #[must_use]
 pub fn palm_pose(joints: &Joints) -> PalmPose {
+    // Contract v3 uses the simulator's nominal gripperframe (+Z approach, +Y opening).
+    // The physical mount and measured kinematics require independent real-cell calibration.
+    let tool0_to_palm =
+        Isometry3::new(Vector3::z() * V3_PALM_IN_TOOL0_Z, Vector3::z() * -FRAC_PI_2);
+    PalmPose::new(&(tool0_pose(joints) * tool0_to_palm))
+}
+
+/// The legacy demonstration recorder's original physical-bracket convention.
+#[must_use]
+pub fn recorder_palm_pose(joints: &Joints) -> PalmPose {
     PalmPose::new(&(tool0_pose(joints) * tool0_to_gripper_mount() * gripper_mount_to_palm()))
 }
 
@@ -87,15 +98,39 @@ impl PalmPose {
     }
 }
 
-fn tool0_pose(joints: &Joints) -> Isometry3<f64> {
-    let base_link_to_base = Isometry3::from_parts(
+/// Commanded palm and elbow speeds in m/s, using the position Jacobians at the clipped target.
+#[must_use]
+pub fn palm_elbow_speeds(target: &Joints, delta: &Joints) -> (f64, f64) {
+    let mut frame = dh_base();
+    let mut angular = Vector3::zeros();
+    let mut linear = Vector3::zeros();
+    let mut elbow = Vector3::zeros();
+    for (joint, link) in UR12E.iter().enumerate() {
+        angular += frame.rotation * Vector3::z() * delta[joint];
+        let next = frame * dh_transform(link, target[joint]);
+        linear += angular.cross(&(next.translation.vector - frame.translation.vector));
+        frame = next;
+        if joint == 1 {
+            elbow = linear; // DH frame 2 is the simulator's forearm_link origin.
+        }
+    }
+    let palm = linear + angular.cross(&(frame.rotation * Vector3::z() * V3_PALM_IN_TOOL0_Z));
+    let dt = STEP.as_secs_f64();
+    (palm.norm() / dt, elbow.norm() / dt)
+}
+
+fn dh_base() -> Isometry3<f64> {
+    Isometry3::from_parts(
         Translation3::identity(),
         UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI),
-    );
+    )
+}
+
+fn tool0_pose(joints: &Joints) -> Isometry3<f64> {
     UR12E
         .iter()
         .zip(joints)
-        .fold(base_link_to_base, |pose, (link, &theta)| {
+        .fold(dh_base(), |pose, (link, &theta)| {
             pose * dh_transform(link, theta)
         })
 }
@@ -139,6 +174,20 @@ mod tests {
         )))
         .unwrap()
     });
+
+    #[test_case([0.0;6], [1.18425,0.4221,0.06085],[0.5,-0.5,0.5,0.5])]
+    #[test_case([0.2,-1.1,1.3,-0.9,-1.5,0.4], [0.673560537,0.332125508,0.362193317],[0.093908217,0.900117085,-0.105314716,-0.412164154])]
+    fn simulator_palm_fixture(joints: Joints, xyz: [f64; 3], wxyz: [f64; 4]) {
+        let pose = palm_pose(&joints);
+        assert_abs_diff_eq!(
+            Vector3::from(pose.position),
+            Vector3::from(xyz),
+            epsilon = 1e-6
+        );
+        let actual = Vector4::from(pose.orientation);
+        let reference = Vector4::from(wxyz);
+        assert_abs_diff_eq!(actual.dot(&reference).abs(), 1.0, epsilon = 1e-6);
+    }
 
     /// What launch.xml gives `robot_state_publisher`, which needs `robotiq_description` sourced.
     static GRIPPER_URDF: LazyLock<Document<'static>> = LazyLock::new(|| {

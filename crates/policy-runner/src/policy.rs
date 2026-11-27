@@ -1,22 +1,23 @@
-//! The policy server, over HTTP.
+//! The policy server, over verified HTTPS.
 
+use color_eyre::eyre::{WrapErr, ensure};
 use policy_contract::{
     SCHEMA_VERSION,
     wire::{ActRequest, Action, EchoHeaders, InvalidReply, validate},
 };
+use reqwest::{Certificate, Client, Url};
 use serde::Deserialize;
-use std::{fmt, time::Duration};
+use std::{fmt, path::Path, time::Duration};
+use tokio::runtime::Runtime;
 
 const CONTRACT: &str = "v0";
-pub const ACT_TIMEOUT: Duration = Duration::from_millis(100);
-const PLANNING_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ActError {
-    /// A timeout or a connection error: worth sending again.
-    #[error(transparent)]
-    Transient(#[from] ureq::Error),
+    #[error("policy connection failed: {0:#}")]
+    Transport(#[from] color_eyre::Report),
     #[error("invalid reply")]
     Invalid(#[from] InvalidReply),
 }
@@ -56,6 +57,46 @@ pub struct PolicyStatus {
     pub readiness: Readiness,
 }
 
+/// reqwest keeps the URL at the head of its error chain. The TUI leads with the
+/// transport cause, while the timestamped log retains the complete chain.
+pub fn connection_reason(detail: &str) -> &str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("expired") {
+        return "TLS certificate expired";
+    }
+    if lower.contains("not yet valid") {
+        return "TLS certificate is not yet valid";
+    }
+    if lower.contains("not valid for")
+        || lower.contains("notvalidforname")
+        || lower.contains("hostname mismatch")
+    {
+        return "TLS certificate hostname mismatch";
+    }
+    if lower.contains("unknownissuer")
+        || lower.contains("unknown issuer")
+        || lower.contains("unable to get local issuer")
+    {
+        return "TLS certificate issuer is untrusted";
+    }
+    if lower.contains("certificate") {
+        return "TLS certificate verification failed";
+    }
+    if lower.contains("refused") {
+        return "Connection refused";
+    }
+    if lower.contains("dns") || lower.contains("failed to lookup") {
+        return "Policy hostname lookup failed";
+    }
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return "Policy connection timed out";
+    }
+    detail
+        .rsplit(": ")
+        .next()
+        .unwrap_or("Policy connection failed")
+}
+
 impl fmt::Display for Health {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -92,14 +133,14 @@ impl fmt::Display for Readiness {
 }
 
 /// A reply's status and body, or why there was none.
-type HttpReply = Result<(u16, String), ureq::Error>;
+type HttpReply = Result<(u16, String), color_eyre::Report>;
 
 impl From<HttpReply> for Health {
     fn from(reply: HttpReply) -> Self {
         match reply {
             Ok((200, _)) => Self::Up,
             Ok((status, _)) => Self::HttpStatus(status),
-            Err(error) => Self::Unreachable(error.to_string()),
+            Err(error) => Self::Unreachable(format!("{error:#}")),
         }
     }
 }
@@ -128,179 +169,280 @@ impl From<HttpReply> for Readiness {
                 Err(error) => Self::Malformed(error.to_string()),
             },
             Ok((status, _)) => Self::HttpStatus(status),
-            Err(error) => Self::Unreachable(error.to_string()),
+            Err(error) => Self::Unreachable(format!("{error:#}")),
         }
     }
 }
 
 pub struct Policy {
-    agent: ureq::Agent,
-    url: String,
+    pub runtime: Runtime,
+    client: Client,
+    url: Url,
 }
 
 impl Policy {
-    pub fn new(url: &str) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            // A proxy from the environment would sit between us and a policy on the local network.
-            .proxy(None)
-            .build()
-            .new_agent();
-        Self {
-            agent,
-            url: url.trim_end_matches('/').to_owned(),
-        }
+    pub fn new(url: &str, ca_cert: &Path) -> color_eyre::Result<Self> {
+        let url = Url::parse(url)?;
+        ensure!(
+            url.scheme() == "https"
+                && url.has_host()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "--policy must be an HTTPS origin without credentials or a path"
+        );
+        let ca = std::fs::read(ca_cert).wrap_err("read mounted policy CA certificate")?;
+        let roots = Certificate::from_pem_bundle(&ca)?;
+        ensure!(
+            !roots.is_empty(),
+            "policy CA bundle contains no PEM certificates"
+        );
+        let client = Client::builder()
+            .https_only(true)
+            .no_proxy()
+            .tls_certs_only(roots)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        Ok(Self {
+            runtime,
+            client,
+            url,
+        })
     }
 
-    /// Polls `/healthz` and `/readyz` once each.
     pub fn status(&self) -> PolicyStatus {
-        PolicyStatus {
-            health: self.get("/healthz").into(),
-            readiness: self.get("/readyz").into(),
+        self.runtime.block_on(async {
+            PolicyStatus {
+                health: self.get("/healthz").await.into(),
+                readiness: self.get("/readyz").await.into(),
+            }
+        })
+    }
+
+    async fn get(&self, path: &str) -> HttpReply {
+        let response = self
+            .client
+            .get(self.url.join(path)?)
+            .timeout(STATUS_TIMEOUT)
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        Ok((
+            status,
+            String::from_utf8(body_bytes(response, 64 * 1024).await?)?,
+        ))
+    }
+
+    pub async fn act(
+        &self,
+        request: &ActRequest<'_>,
+        remaining: Duration,
+    ) -> Result<Vec<Action>, ActError> {
+        let response = self
+            .client
+            .post(self.url.join("/act").map_err(color_eyre::Report::new)?)
+            .header("X-RC-Episode-Id", request.episode_id)
+            .header("X-RC-Step", request.step)
+            .timeout(remaining)
+            .json(request)
+            .send()
+            .await
+            .map_err(color_eyre::Report::new)?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(ActError::Transport(color_eyre::eyre::eyre!(
+                "policy returned HTTP {status}"
+            )));
         }
-    }
-
-    fn get(&self, path: &str) -> HttpReply {
-        let mut response = self
-            .agent
-            .get(format!("{}{path}", self.url))
-            .config()
-            .timeout_global(Some(STATUS_TIMEOUT))
-            .build()
-            .call()?;
-        let status = response.status().as_u16();
-        Ok((status, response.body_mut().read_to_string()?))
-    }
-
-    pub fn act(&self, request: &ActRequest<'_>) -> Result<Vec<Action>, ActError> {
-        let timeout = if request.step == 0 {
-            PLANNING_TIMEOUT
-        } else {
-            ACT_TIMEOUT
-        };
-        let mut response = self
-            .agent
-            .post(format!("{}/act", self.url))
-            .config()
-            .timeout_global(Some(timeout))
-            .build()
-            .send_json(request)?;
-
-        let status = response.status().as_u16();
         let header = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned)
+            let mut values = response.headers().get_all(name).iter();
+            let first = values.next()?.to_str().ok()?;
+            values.next().is_none().then(|| first.to_owned())
         };
         let headers = EchoHeaders {
             episode_id: header("X-RC-Episode-Id"),
             step: header("X-RC-Step"),
         };
-        let body = response.body_mut().read_to_string()?;
-        if status != 200 {
-            return Err(InvalidReply::Status(status).into());
-        }
-        Ok(validate(&body, &headers, request.episode_id, request.step)?)
+        let bytes = body_bytes(response, 2 * 1024 * 1024).await?;
+        let body = std::str::from_utf8(&bytes).map_err(|_| InvalidReply::Encoding)?;
+        Ok(validate(body, &headers, request.episode_id, request.step)?)
     }
+}
+
+async fn body_bytes(mut response: reqwest::Response, limit: usize) -> color_eyre::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(part) = response.chunk().await? {
+        ensure!(
+            bytes.len() + part.len() <= limit,
+            "policy reply exceeds {limit} byte limit"
+        );
+        bytes.extend_from_slice(&part);
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use policy_contract::wire::{Images, Proprio};
     use serde_json::{Value, json};
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        thread,
-    };
     use test_case::test_case;
 
     fn ok(body: &Value) -> (u16, String) {
         (200, body.to_string())
     }
 
-    #[test_case(Ok(ok(&json!({"ready": true, "contract": "v0", "schema_version": 2}))) => Readiness::Ready; "ready")]
+    #[test_case(Ok(ok(&json!({"ready": true, "contract": "v0", "schema_version": 3}))) => Readiness::Ready; "ready")]
     #[test_case(Ok(ok(&json!({"ready": false}))) => Readiness::NotReady; "not ready")]
     #[test_case(Ok(ok(&json!({"ready": true, "contract": "v1", "schema_version": 2})))
         => Readiness::Incompatible { contract: Some("v1".to_owned()), schema_version: Some(2) };
         "wrong contract")]
-    #[test_case(Ok(ok(&json!({"ready": true, "contract": "v0", "schema_version": 3})))
-        => Readiness::Incompatible { contract: Some("v0".to_owned()), schema_version: Some(3) };
+    #[test_case(Ok(ok(&json!({"ready": true, "contract": "v0", "schema_version": 2})))
+        => Readiness::Incompatible { contract: Some("v0".to_owned()), schema_version: Some(2) };
         "wrong schema version")]
     #[test_case(Ok(ok(&json!({"ready": true})))
         => Readiness::Incompatible { contract: None, schema_version: None };
         "missing fields")]
     #[test_case(Ok((503, String::new())) => Readiness::HttpStatus(503); "non-200")]
     #[test_case(Ok((200, "<html>".to_owned())) => matches Readiness::Malformed(_); "malformed")]
-    #[test_case(Err(ureq::Error::ConnectionFailed) => matches Readiness::Unreachable(_); "unreachable")]
+    #[test_case(Err(color_eyre::eyre::eyre!("connection failed")) => matches Readiness::Unreachable(_); "unreachable")]
     fn readiness_of(reply: HttpReply) -> Readiness {
         Readiness::from(reply)
     }
 
     #[test_case(Ok(ok(&json!({}))) => Health::Up; "up")]
     #[test_case(Ok((500, String::new())) => Health::HttpStatus(500); "non-200")]
-    #[test_case(Err(ureq::Error::ConnectionFailed) => matches Health::Unreachable(_); "unreachable")]
+    #[test_case(Err(color_eyre::eyre::eyre!("connection failed")) => matches Health::Unreachable(_); "unreachable")]
     fn health_of(reply: HttpReply) -> Health {
         Health::from(reply)
     }
+}
 
-    #[test_case(0, true)]
-    #[test_case(1, false)]
-    fn delayed_planning_does_not_relax_control_deadlines(step: u32, succeeds: bool) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(&stream);
-            let mut content_length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    content_length = value.trim().parse::<usize>().unwrap();
-                }
+#[cfg(test)]
+mod https_tests {
+    use super::*;
+    use policy_contract::wire::Images;
+    use serde_json::Value;
+    use std::{
+        io::{BufRead, BufReader},
+        path::PathBuf,
+        process::{Child, Command, Stdio},
+    };
+
+    struct Peer {
+        process: Child,
+        root: PathBuf,
+        port: u16,
+    }
+
+    impl Peer {
+        fn start(validity: &str) -> Self {
+            let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/https_fixture.py");
+            let mut process = Command::new("python3")
+                .arg(script)
+                .arg(validity)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(process.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let (root, port) = serde_json::from_str(&line).unwrap();
+            Self {
+                process,
+                root,
+                port,
             }
-            reader.read_exact(&mut vec![0; content_length]).unwrap();
-            thread::sleep(Duration::from_millis(250));
-            let body = json!({
-                "episode_id": "planning-test", "step": step,
-                "action": {"type": "joint_delta", "values": [0, 0, 0, 0, 0, 0], "gripper": 1.0}
-            })
-            .to_string();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-RC-Episode-Id: planning-test\r\nX-RC-Step: {step}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-        });
-        let request = ActRequest {
-            episode_id: "planning-test",
-            step,
-            task_id: "bolt_to_tray",
-            schema_version: SCHEMA_VERSION,
-            images: Images { top: String::new() },
-            proprio: Proprio {
-                joint_pos: [0.0; 6],
-                joint_vel: [0.0; 6],
-                gripper: 1.0,
-                ee_pos: [0.0; 3],
-                ee_quat: [1.0, 0.0, 0.0, 0.0],
-            },
-        };
-        let reply = Policy::new(&format!("http://{address}")).act(&request);
-        if succeeds {
-            assert_eq!(reply.unwrap().len(), 1);
-        } else {
-            std::assert_matches!(reply, Err(ActError::Transient(_)));
         }
-        server.join().unwrap();
+
+        fn client(&self, host: &str, ca: &str) -> Policy {
+            Policy::new(
+                &format!("https://{host}:{}", self.port),
+                &self.root.join(ca),
+            )
+            .unwrap()
+        }
+    }
+
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            drop(self.process.stdin.take());
+            let _ = self.process.wait();
+        }
+    }
+
+    #[test]
+    fn verified_https_and_bounded_calls_without_retry() {
+        let peer = Peer::start("1");
+        let client = peer.client("localhost", "ca.pem");
+        assert_eq!(
+            client.status(),
+            PolicyStatus {
+                health: Health::Up,
+                readiness: Readiness::Ready
+            }
+        );
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../docs/contract-fixtures/whistle-policy-v3.json"
+        ))
+        .unwrap();
+        let sample = &fixture["request"];
+        let goals: Images = serde_json::from_value(sample["goal"].clone()).unwrap();
+        let mut request = ActRequest {
+            episode_id: "https-test",
+            step: 7,
+            task_id: "bolt_to_tray",
+            instruction: sample["instruction"].as_str().unwrap(),
+            schema_version: SCHEMA_VERSION,
+            images: serde_json::from_value(sample["images"].clone()).unwrap(),
+            goal: &goals,
+            proprio: serde_json::from_value(sample["proprio"].clone()).unwrap(),
+        };
+        let actions = client
+            .runtime
+            .block_on(client.act(&request, Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(actions[0].delta, [0.05; 6]);
+        request.task_id = "slow";
+        let timeout = client
+            .runtime
+            .block_on(client.act(&request, Duration::from_millis(100)));
+        std::assert_matches!(timeout, Err(ActError::Transport(_)));
+        let (_, body) = client.runtime.block_on(client.get("/healthz")).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["calls"], 2);
+        for (host, ca, expected) in [
+            (
+                "localhost",
+                "untrusted.pem",
+                "TLS certificate issuer is untrusted",
+            ),
+            ("127.0.0.1", "ca.pem", "TLS certificate hostname mismatch"),
+        ] {
+            let Health::Unreachable(reason) = peer.client(host, ca).status().health else {
+                panic!("unexpected TLS success")
+            };
+            assert_eq!(connection_reason(&reason), expected, "{reason}");
+        }
+    }
+
+    #[test]
+    fn expired_policy_certificate_is_refused() {
+        let peer = Peer::start("-1");
+        let Health::Unreachable(reason) = peer.client("localhost", "ca.pem").status().health else {
+            panic!("unexpected TLS success")
+        };
+        assert_eq!(
+            connection_reason(&reason),
+            "TLS certificate expired",
+            "{reason}"
+        );
     }
 }

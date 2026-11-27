@@ -1,14 +1,15 @@
-//! The `/act` contract `v0`, schema version 2, as `API.md` describes it: what the policy server and
+//! The `/act` contract `v0`, schema version 3, as `API.md` describes it: what the policy server and
 //! the tools that observe or command the robot for it must agree on.
 
 pub mod gripper;
 pub mod image;
 pub mod kinematics;
+mod strict_json;
 pub mod wire;
 
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const STEP: Duration = Duration::from_millis(50);
 
 /// Joint positions in the contract's order: shoulder pan, shoulder lift, elbow, wrist 1, 2, 3.

@@ -5,7 +5,7 @@ _.python.venv = { path = ".venv", create = true, uv_create_args = ["--python", "
 description = "UR12e and 2F-140 on mock hardware, and the Gemini 336; takes camera:=false, rviz:=true, hand_guiding:=false"
 depends = ["build-hand-guiding"]
 dir = "{{config_root}}/robot"
-run = "ros2 launch launch.xml robot:=mock"
+run = "ros2 launch launch.xml robot:=mock rviz_config:=\"{{config_root}}/robot/mock-view.rviz\""
 
 [tasks.real-robot]
 description = "UR12e, 2F-140 and Gemini 336; takes robot_ip:=<address> (default 192.168.56.101), camera:=false, rviz:=true, headless_mode:=false, hand_guiding:=false"
@@ -22,7 +22,7 @@ description = "A stand-in policy on port 8000; `mise run test-policy -- --help` 
 run = "python3 test-policy.py"
 
 [tasks.policy-runner]
-description = "The policy runner; takes --task <task_id>, and --policy <url>, --no-camera"
+description = "The schema v3 mock policy runner; takes --task <task_id>, see --help for connection settings"
 run = "cargo run --release -p policy-runner --"
 
 [tasks.record]

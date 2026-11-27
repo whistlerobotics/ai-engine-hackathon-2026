@@ -2,8 +2,10 @@ mod app;
 mod episode;
 mod gripper;
 mod log;
+mod motion;
 mod policy;
 mod ros;
+mod task;
 mod ui;
 mod worker;
 
@@ -16,7 +18,8 @@ use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
 };
-use ros::{CAMERA_TOPIC, CameraSource, Ros};
+use ros::Ros;
+use std::path::PathBuf;
 use std::{
     io::{self, IsTerminal},
     sync::{
@@ -27,6 +30,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use task::TaskPack;
 
 /// How long the display waits for a key before drawing again.
 const FRAME: Duration = Duration::from_millis(50);
@@ -39,52 +43,76 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 #[derive(Parser)]
 struct Args {
     /// The policy server's base URL.
-    #[arg(long, default_value = "http://127.0.0.1:18081")]
+    #[arg(long, env = "WHISTLE_POLICY_URL")]
     policy: String,
     /// The `task_id` sent to the policy; `t` changes it between episodes.
     #[arg(long)]
     task: String,
-    /// Compressed-image topic used for policy frames and the policy-input live indicator.
-    #[arg(long, default_value = CAMERA_TOPIC, conflicts_with = "no_camera")]
-    camera_topic: String,
-    /// Native compressed-image dimensions, WIDTHxHEIGHT; frames are not resized.
-    #[arg(long, default_value = "640x360", value_parser = camera_size, conflicts_with = "no_camera")]
-    camera_size: (usize, usize),
-    /// Send a black frame to the policy; the three camera feeds are still monitored.
-    #[arg(long)]
-    no_camera: bool,
+    #[arg(long, env = "WHISTLE_MODE", value_parser=["mock","real"])]
+    mode: String,
+    #[arg(long, env = "WHISTLE_POLICY_CA")]
+    ca_cert: PathBuf,
+    #[arg(long, env = "WHISTLE_TASK_PACK")]
+    task_pack: PathBuf,
+    #[arg(long, env = "WHISTLE_EVENT_LOG")]
+    event_log: PathBuf,
+    #[arg(
+        long,
+        env = "WHISTLE_WRIST_TOPIC",
+        default_value = "/wrist_camera/color/image_raw/compressed"
+    )]
+    wrist_topic: String,
+    #[arg(
+        long,
+        env = "WHISTLE_LEFT_TOPIC",
+        default_value = "/left_camera/color/image_raw/compressed"
+    )]
+    left_topic: String,
+    #[arg(
+        long,
+        env = "WHISTLE_RIGHT_TOPIC",
+        default_value = "/right_camera/color/image_raw/compressed"
+    )]
+    right_topic: String,
 }
 
-fn camera_size(value: &str) -> std::result::Result<(usize, usize), String> {
-    let (width, height) = value.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
-    let width: usize = width.parse().map_err(|_| "invalid camera width")?;
-    let height: usize = height.parse().map_err(|_| "invalid camera height")?;
-    if !(1..=8192).contains(&width) || !(1..=8192).contains(&height) {
-        return Err("camera dimensions must be between 1 and 8192".to_owned());
+fn require_mock_domain(mode: &str, domain: Option<&str>) -> Result<()> {
+    if mode != "mock" {
+        bail!(
+            "real mode unavailable: physical calibration, watchdog and stop verification pending"
+        );
     }
-    Ok((width, height))
+    if domain != Some("77") {
+        bail!("the isolated Spark mock requires ROS_DOMAIN_ID=77");
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
+    require_mock_domain(&args.mode, std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
+    if args.wrist_topic == args.left_topic
+        || args.wrist_topic == args.right_topic
+        || args.left_topic == args.right_topic
+    {
+        bail!("each camera role must have a distinct ROS topic");
+    }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("the policy runner needs a terminal: run it from an interactive shell");
     }
     ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::Relaxed))?;
 
-    let log = Arc::new(Log::new());
-    let policy = Policy::new(&args.policy);
-    let monitored_policy = Policy::new(&args.policy);
-    let camera = if args.no_camera {
-        CameraSource::BlackImage
-    } else {
-        CameraSource::RosTopic
-    };
+    let pack = TaskPack::open(&args.task_pack)?;
+    let log = Arc::new(Log::open(&args.event_log)?);
+    log.push(format!(
+        "MOCK domain=77 pack={} start_pose_rad={:?}",
+        pack.revision, pack.start
+    ));
+    let policy = Policy::new(&args.policy, &args.ca_cert)?;
+    let monitored_policy = Policy::new(&args.policy, &args.ca_cert)?;
     let ros = Ros::new(
-        camera,
-        &args.camera_topic,
-        args.camera_size,
+        [&args.wrist_topic, &args.left_topic, &args.right_topic],
         Arc::clone(&log),
     )?;
     let shared = Shared::new(log);
@@ -94,21 +122,14 @@ fn main() -> Result<()> {
     let result = thread::scope(|scope| {
         let (commands, received) = mpsc::channel();
         let worker = scope.spawn({
-            let (ros, policy, shared) = (&ros, &policy, &shared);
-            move || worker::serve(ros, policy, shared, &received)
+            let (ros, policy, shared, pack) = (&ros, &policy, &shared, &pack);
+            move || worker::serve(ros, policy, shared, &received, pack)
         });
         scope.spawn(|| monitor(&monitored_policy, &shared));
 
-        let mut app = App::new(
-            &shared,
-            commands,
-            args.policy.clone(),
-            camera,
-            args.task.clone(),
-        );
-        app.camera_topic = args.camera_topic.clone();
+        let app = App::new(&shared, commands, args.policy.clone(), args.task.clone());
         let stop = StopOnDrop(&shared);
-        let ui = run_ui(terminal, app, &ros, || worker.is_finished());
+        let ui = run_ui(terminal, app, &ros, &pack, || worker.is_finished());
         drop(stop);
         let worker = worker
             .join()
@@ -140,11 +161,30 @@ fn run_ui(
     mut terminal: DefaultTerminal,
     mut app: App<'_>,
     ros: &Ros,
+    pack: &TaskPack,
     worker_finished: impl Fn() -> bool,
 ) -> Result<()> {
     let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut checked = None;
+    let mut controller_status = None;
     loop {
-        let robot = Robot::read(ros);
+        if checked.as_ref() != Some(&app.task_id) {
+            app.task_error = pack.select(&app.task_id).err().map(|e| format!("{e:#}"));
+            if let Some(reason) = &app.task_error {
+                app.shared.log.push(format!("Task unavailable: {reason}"));
+            }
+            checked = Some(app.task_id.clone());
+        }
+        let status = (ros.controller_issue(), ros.gripper_issue());
+        if controller_status != Some(status) {
+            app.shared.log.push(format!(
+                "Mock arm: {}. Mock gripper: {}.",
+                status.0.unwrap_or("active with feedback"),
+                status.1.unwrap_or("active")
+            ));
+            controller_status = Some(status);
+        }
+        let robot = Robot::read(ros, pack.start);
         terminal.draw(|frame| ui::draw(frame, &app, robot))?;
         if app.quit || worker_finished() {
             return Ok(());
@@ -185,16 +225,15 @@ fn monitor(policy: &Policy, shared: &Shared) {
 }
 
 #[cfg(test)]
-mod camera_tests {
+mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("640x360" => matches Ok((640, 360)))]
-    #[test_case("640x480" => matches Ok((640, 480)))]
-    #[test_case("0x480" => matches Err(_))]
-    #[test_case("640x0" => matches Err(_))]
-    #[test_case("bad" => matches Err(_))]
-    fn dimensions(value: &str) -> std::result::Result<(usize, usize), String> {
-        camera_size(value)
+    #[test_case("mock",Some("77") => matches Ok(()))]
+    #[test_case("real",Some("77") => matches Err(_))]
+    #[test_case("mock",Some("42") => matches Err(_))]
+    #[test_case("mock",None => matches Err(_))]
+    fn mode_and_ros_domain(mode: &str, domain: Option<&str>) -> Result<()> {
+        require_mock_domain(mode, domain)
     }
 }

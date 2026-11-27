@@ -11,16 +11,21 @@ pub struct ActRequest<'a> {
     pub step: u32,
     pub task_id: &'a str,
     pub schema_version: u32,
+    pub instruction: &'a str,
     pub images: Images,
+    pub goal: &'a Images,
     pub proprio: Proprio,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Images {
-    pub top: String,
+    pub wrist: String,
+    pub left: String,
+    pub right: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Proprio {
     pub joint_pos: Joints,
     pub joint_vel: Joints,
@@ -42,8 +47,6 @@ struct Reply {
     episode_id: String,
     step: u64,
     action: ReplyAction,
-    #[serde(flatten)]
-    unknown: Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +55,7 @@ enum ReplyAction {
     JointDelta(JointDelta),
     ActionChunk {
         actions: Vec<ChunkedAction>,
+        #[serde(default = "missing_chunk_len", deserialize_with = "chunk_length")]
         chunk_len: Option<usize>,
         #[serde(flatten)]
         unknown: Map<String, Value>,
@@ -75,18 +79,14 @@ struct JointDelta {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidReply {
-    #[error("HTTP status {0}")]
-    Status(u16),
+    #[error("invalid UTF-8 in JSON response")]
+    Encoding,
     #[error("malformed reply")]
     Malformed(#[from] serde_json::Error),
     #[error("unknown field {0}")]
     UnknownField(String),
     #[error("{at} has {count} entries, not 6")]
     WrongValueCount { at: String, count: usize },
-    #[error("{at} is not finite")]
-    NotFinite { at: String },
-    #[error("{at} is out of range")]
-    OutOfRange { at: String },
     #[error("a chunk of {0} actions, not 1 to {MAX_CHUNK}")]
     ChunkSize(usize),
     #[error("chunk_len is {chunk_len}, but there are {actions} actions")]
@@ -118,9 +118,7 @@ pub fn validate(
     episode_id: &str,
     step: u32,
 ) -> Result<Vec<Action>, InvalidReply> {
-    let reply: Reply = serde_json::from_str(body)?;
-
-    reject_unknown(&reply.unknown, "")?;
+    let reply: Reply = serde_json::from_value(super::strict_json::parse(body)?)?;
     check_echo("episode_id", episode_id, &reply.episode_id)?;
     check_echo("step", &step.to_string(), &reply.step.to_string())?;
     let episode_header = headers.episode_id.as_deref().unwrap_or("missing");
@@ -135,7 +133,12 @@ pub fn validate(
             chunk_len,
             unknown,
         } => {
-            reject_unknown(&unknown, "action.")?;
+            if let Some(field) = ["values", "gripper"]
+                .into_iter()
+                .find(|key| unknown.contains_key(*key))
+            {
+                return Err(InvalidReply::UnknownField(format!("action.{field}")));
+            }
             if !(1..=MAX_CHUNK).contains(&actions.len()) {
                 return Err(InvalidReply::ChunkSize(actions.len()));
             }
@@ -166,41 +169,24 @@ fn joint_delta(action: &JointDelta, at: &str) -> Result<Action, InvalidReply> {
             at: format!("{at}.values"),
             count: action.values.len(),
         })?;
-    for (i, value) in delta.iter().enumerate() {
-        check_number(*value, MAX_DELTA, &format!("{at}.values[{i}]"))?;
-    }
-    let gripper = action.gripper;
-    if !gripper.is_finite() {
-        return Err(InvalidReply::NotFinite {
-            at: format!("{at}.gripper"),
-        });
-    }
-    if !(0.0..=1.0).contains(&gripper) {
-        return Err(InvalidReply::OutOfRange {
-            at: format!("{at}.gripper"),
-        });
-    }
-    Ok(Action { delta, gripper })
+    Ok(Action {
+        delta: delta.map(|v| v.clamp(-MAX_DELTA, MAX_DELTA)),
+        gripper: action.gripper.clamp(0.0, 1.0),
+    })
 }
 
-/// Checks that `value` is finite and within `[-limit, limit]`.
-fn check_number(value: f64, limit: f64, at: &str) -> Result<(), InvalidReply> {
-    if !value.is_finite() {
-        return Err(InvalidReply::NotFinite { at: at.to_owned() });
-    }
-    if value.abs() > limit {
-        return Err(InvalidReply::OutOfRange { at: at.to_owned() });
-    }
-    Ok(())
+const fn missing_chunk_len() -> Option<usize> {
+    None
+}
+
+fn chunk_length<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    usize::deserialize(d).map(Some)
 }
 
 fn reject_unknown(fields: &Map<String, Value>, prefix: &str) -> Result<(), InvalidReply> {
-    fields
-        .keys()
-        .find(|name| !name.starts_with('_'))
-        .map_or(Ok(()), |name| {
-            Err(InvalidReply::UnknownField(format!("{prefix}{name}")))
-        })
+    fields.keys().next().map_or(Ok(()), |name| {
+        Err(InvalidReply::UnknownField(format!("{prefix}{name}")))
+    })
 }
 
 fn check_echo(at: &'static str, expected: &str, received: &str) -> Result<(), InvalidReply> {
@@ -253,16 +239,11 @@ mod tests {
     #[test_case(|r, _| r["action"] = chunk(16) => matches Ok(a) if a.len() == 16; "chunk of 16")]
     #[test_case(|r, _| { r["action"] = without(chunk(2), "chunk_len"); }
         => matches Ok(a) if a.len() == 2; "chunk without chunk_len")]
-    #[test_case(|r, _| r["_debug"] = json!({ "anything": 1 }) => matches Ok(_); "underscore at top")]
-    #[test_case(|r, _| r["action"]["_debug"] = json!("x") => matches Ok(_); "underscore in action")]
-    #[test_case(|r, _| { r["action"] = chunk(2); r["action"]["actions"][1]["_debug"] = json!(null); }
-        => matches Ok(_); "underscore in chunk action")]
-    #[test_case(|r, _| r["action"]["values"][0] = json!(0.051) => matches Err(InvalidReply::OutOfRange { .. }); "delta above range")]
-    #[test_case(|r, _| r["action"]["values"][5] = json!(-0.051) => matches Err(InvalidReply::OutOfRange { .. }); "delta below range")]
-    #[test_case(|r, _| r["action"]["gripper"] = json!(1.01) => matches Err(InvalidReply::OutOfRange { .. }); "gripper above range")]
-    #[test_case(|r, _| r["action"]["gripper"] = json!(-0.01) => matches Err(InvalidReply::OutOfRange { .. }); "gripper below range")]
-    #[test_case(|r, _| { r["action"] = chunk(2); r["action"]["actions"][1]["values"][2] = json!(0.06); }
-        => matches Err(InvalidReply::OutOfRange { .. }); "chunk delta out of range")]
+    #[test_case(|r, _| r["_debug"] = json!(2) => matches Ok(_); "extra response field")]
+    #[test_case(|r, _| r["action"]["_debug"] = json!(2) => matches Err(InvalidReply::UnknownField(_)); "strict element")]
+    #[test_case(|r, _| r["action"]["values"][0] = json!(2.0) => matches Ok(a) if a[0].delta[0] == 0.05; "positive clamp")]
+    #[test_case(|r, _| r["action"]["values"][3] = json!(-2.0) => matches Ok(a) if a[0].delta[3] == -0.05; "negative clamp")]
+    #[test_case(|r, _| r["action"]["gripper"] = json!(-1.0) => matches Ok(a) if a[0].gripper == 0.0; "gripper clamp")]
     #[test_case(|r, _| r["action"]["values"] = json!([0.0, 0.0, 0.0, 0.0, 0.0])
         => matches Err(InvalidReply::WrongValueCount { count: 5, .. }); "five values")]
     #[test_case(|r, _| r["action"]["values"] = json!([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -273,7 +254,7 @@ mod tests {
         => matches Err(InvalidReply::Malformed(_)); "missing gripper")]
     #[test_case(|r, _| { r["action"] = without(delta(1.0), "values"); }
         => matches Err(InvalidReply::Malformed(_)); "missing values")]
-    #[test_case(|r, _| r["extra"] = json!(1) => matches Err(InvalidReply::UnknownField(f)) if f == "extra"; "unknown at top")]
+    #[test_case(|r, _| r["extra"] = json!(1) => matches Ok(_); "unknown at top")]
     #[test_case(|r, _| r["action"]["speed"] = json!(1) => matches Err(InvalidReply::UnknownField(f)) if f == "action.speed"; "unknown in action")]
     #[test_case(|r, _| { r["action"] = chunk(2); r["action"]["actions"][0]["x"] = json!(1); }
         => matches Err(InvalidReply::UnknownField(f)) if f == "action.actions[0].x"; "unknown in chunk action")]
@@ -292,6 +273,71 @@ mod tests {
     #[test_case(|_, h| h.step = None => matches Err(InvalidReply::WrongEcho { at: "X-RC-Step", .. }); "missing step header")]
     fn reply_validation(edit: Edit) -> Result<Vec<Action>, InvalidReply> {
         validate_edited(edit)
+    }
+
+    #[test]
+    fn shared_wire_fixture() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../docs/contract-fixtures/whistle-policy-v3.json"
+        ))
+        .unwrap();
+        let sample = &fixture["request"];
+        let episode = sample["episode_id"].as_str().unwrap();
+        let step = sample["step"].as_u64().unwrap() as u32;
+        let goal: Images = serde_json::from_value(sample["goal"].clone()).unwrap();
+        let request = ActRequest {
+            episode_id: episode,
+            step,
+            task_id: sample["task_id"].as_str().unwrap(),
+            instruction: sample["instruction"].as_str().unwrap(),
+            schema_version: crate::SCHEMA_VERSION,
+            images: serde_json::from_value(sample["images"].clone()).unwrap(),
+            goal: &goal,
+            proprio: serde_json::from_value(sample["proprio"].clone()).unwrap(),
+        };
+        assert_eq!(serde_json::to_value(&request).unwrap(), *sample);
+        for imgs in [&request.images, request.goal] {
+            for image in [&imgs.wrist, &imgs.left, &imgs.right] {
+                crate::image::check_policy_jpeg(&STANDARD.decode(image).unwrap()).unwrap();
+            }
+        }
+        for case in fixture["cases"].as_array().unwrap() {
+            let headers = EchoHeaders {
+                episode_id: case["headers"]["X-RC-Episode-Id"]
+                    .as_str()
+                    .map(str::to_owned),
+                step: case["headers"]["X-RC-Step"].as_str().map(str::to_owned),
+            };
+            let result = validate(&case["response"].to_string(), &headers, episode, step);
+            assert_eq!(
+                result.is_err(),
+                case["hold"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+            let actions = result.unwrap_or_else(|_| {
+                vec![Action {
+                    delta: [0.0; 6],
+                    gripper: 0.75,
+                }]
+            });
+            let normalized=actions.iter().map(|action|json!({"type":"joint_delta","values":action.delta,"gripper":action.gripper})).collect::<Vec<_>>();
+            assert_eq!(json!(normalized), case["actions"], "{}", case["name"]);
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_inside_ignored_fields() {
+        let reply = r#"{"episode_id":"ep","step":7,"action":{"type":"joint_delta","values":[0,0,0,0,0,0],"gripper":1},"extra":{"a":1,"a":2}}"#;
+        let headers = EchoHeaders {
+            episode_id: Some("ep".into()),
+            step: Some("7".into()),
+        };
+        std::assert_matches!(
+            validate(reply, &headers, "ep", 7),
+            Err(InvalidReply::Malformed(_))
+        );
     }
 
     #[test]

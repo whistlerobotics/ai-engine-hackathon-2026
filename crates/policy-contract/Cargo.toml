@@ -9,12 +9,14 @@ workspace = true
 
 [dependencies]
 imagesize.workspace = true
+jpeg-decoder.workspace = true
 nalgebra.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 approx.workspace = true
 roxmltree.workspace = true
 test-case.workspace = true

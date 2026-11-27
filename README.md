@@ -35,40 +35,10 @@ do. Extra arguments go through to the launch file or the program, e.g. `mise run
 
 ### On mock hardware
 
-In three terminals:
-
-```bash
-mise run mock-robot
-mise run test-policy
-mise run policy-runner -- --task <task_id> --policy http://127.0.0.1:8000 --no-camera
-```
-
-`mock-robot` brings up the UR12e and the gripper on mock hardware. Pass `camera:=true` to
-start the real Gemini 336 here when no separate camera driver is running. `test-policy` serves a
-stand-in policy on port 8000; `mise run test-policy -- --help` lists the replies it can send,
-including late, chunked and invalid ones.
-
-`mise run test-policy -- --replay recording/<task_id>/<episode_id>.json` plays back a recorded
-episode's motion and gripper instead, relative to wherever the arm starts.
-
-The policy runner is a terminal UI that runs episodes of the policy against the arm. It sends the
-camera's frames from `/right_camera/color/image_raw/compressed` in this local setup;
-`--camera-topic` selects another topic, and `--no-camera` sends a black frame instead.
-An episode fails as soon as the camera's frame is missing or stale, so without a camera plugged in,
-pass `--no-camera`.
-
-### On the real robot
-
-```bash
-mise run real-robot robot_ip:=<address>
-mise run policy-runner -- --task <task_id> --policy <url>
-```
-
-By default `real-robot` sends the driver's program on connect, which needs the arm in Remote Control
-mode; with `headless_mode:=false`, play External Control on the pendant in Local mode instead. It
-reuses the separately running cameras by default in this local setup. Pass `camera:=true`
-only when this launch should own the camera drivers. For all three camera feeds and run
-recording, see [THREE_CAMERA_RECORDING.md](THREE_CAMERA_RECORDING.md).
+Use the [Spark schema v3 workflow](ROS_DRIVER_SIMULATION.md#schema-v3-mock-run)
+to start the scripted HTTPS policy, mock ROS, and the Cargo TUI in separate
+terminals. The Rust runner uses all three live camera streams and the task's
+three goal views, and requires a configured CA and a mock ROS domain.
 
 ### Hand guiding
 

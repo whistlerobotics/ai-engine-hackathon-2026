@@ -3,6 +3,9 @@
 This private repository preserves the Whistle Robotics history and the current Spark changes.
 The active checkout is `/home/joe-spark-2/ai-engine-hackathon-2026`.
 
+For the v3 integration, follow the [schema v3 mock workflow](ROS_DRIVER_SIMULATION.md#schema-v3-mock-run).
+The commands below document the earlier schema v2 checkout.
+
 Open a terminal on the Spark desktop (including through Moonlight) and run:
 
 ```bash

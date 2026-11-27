@@ -2,8 +2,7 @@ use crate::{
     app::{App, Phase, Robot},
     episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEPS},
     gripper::GripperHardware,
-    policy::{ACT_TIMEOUT, Health, Readiness},
-    ros::CameraSource,
+    policy::{Health, Readiness, connection_reason},
 };
 use policy_contract::STEP;
 use ratatui::{
@@ -18,7 +17,7 @@ use std::time::Duration;
 pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
     let [header, middle, log, footer] = Layout::vertical([
         Constraint::Length(4),
-        Constraint::Length(12),
+        Constraint::Length(13),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -35,24 +34,44 @@ pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
-    let mut policy = vec![Span::raw("Policy  "), Span::raw(app.policy_url.clone())];
-    match app.shared.policy.lock().as_ref() {
-        None => policy.push(Span::raw("    not polled yet")),
-        Some(status) => policy.extend([
-            Span::raw("    health "),
-            health_label(&status.health),
-            Span::raw("    ready "),
-            readiness_label(&status.readiness),
-        ]),
+    let mut policy = vec![Span::raw("Policy  ")];
+    let snapshot = app.shared.policy.lock();
+    let failure = snapshot
+        .as_ref()
+        .and_then(|status| match (&status.health, &status.readiness) {
+            (Health::Unreachable(reason), _) | (_, Readiness::Unreachable(reason)) => {
+                Some(connection_reason(reason).to_owned())
+            }
+            (Health::HttpStatus(code), _) => Some(format!("Health endpoint returned HTTP {code}")),
+            (_, Readiness::HttpStatus(code)) => {
+                Some(format!("Readiness endpoint returned HTTP {code}"))
+            }
+            _ => None,
+        });
+    if let Some(reason) = failure {
+        policy.push(Span::styled(reason, Color::Red));
+        policy.push(Span::raw(format!("    {}", app.policy_url)));
+    } else {
+        policy.push(Span::raw(app.policy_url.clone()));
+        match snapshot.as_ref() {
+            None => policy.push(Span::raw("    not polled yet")),
+            Some(status) => policy.extend([
+                Span::raw("    health "),
+                health_label(&status.health),
+                Span::raw("    ready "),
+                readiness_label(&status.readiness),
+            ]),
+        }
     }
+    drop(snapshot);
     if phase == Phase::Running {
         policy.push(Span::raw("    polling paused during the episode"));
     }
-    let camera = match app.camera {
-        CameraSource::RosTopic => app.camera_topic.as_str(),
-        CameraSource::BlackImage => "none, a black frame is sent",
-    };
-    let connection = Line::from(format!("Task    {}    Policy input  {camera}", app.task_id));
+    let connection = Line::from(format!(
+        "Mode    MOCK    Task    {}    Goals: {}",
+        app.task_id,
+        app.task_error.as_deref().unwrap_or("ready")
+    ));
     frame.render_widget(
         Paragraph::new(vec![Line::from(policy), connection])
             .block(Block::bordered().title(" Policy runner ")),
@@ -108,16 +127,12 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
             Span::raw(text),
         ])
     };
-    let camera = robot.camera_live.map_or_else(
-        || Line::from(format!("{:<13}– black frame", "Policy input")),
-        |camera_live| live("Policy input", camera_live),
-    );
     let start_pose = if robot.at_start {
         Span::styled("✓ reached", Color::Green)
     } else {
         Span::raw("✗ away")
     };
-    let setting = |name: &str, value: String| Line::from(format!("{name:<13}{value}"));
+    let setting = |name: &str, value: String| Line::from(format!("{name:<12}{value}"));
     let (grip_speed, grip_force) = match robot.gripper_hardware {
         None => ("–".to_owned(), "–".to_owned()),
         Some(GripperHardware::Other) => ("– mock".to_owned(), "– mock".to_owned()),
@@ -129,11 +144,12 @@ fn draw_robot(frame: &mut Frame<'_>, area: Rect, robot: Robot) {
     let lines = vec![
         live("Arm", robot.arm_live),
         live("Gripper", robot.gripper_live),
-        live("Left camera", robot.cameras_live[0]),
-        live("Right camera", robot.cameras_live[1]),
-        live("Wrist camera", robot.cameras_live[2]),
-        camera,
-        Line::from(vec![Span::raw(format!("{:<13}", "Start pose")), start_pose]),
+        live("Controller", robot.controller_live),
+        live("Grip ctrl", robot.gripper_controller_live),
+        live("Left camera", robot.camera_live[1]),
+        live("Right camera", robot.camera_live[2]),
+        live("Wrist camera", robot.camera_live[0]),
+        Line::from(vec![Span::raw(format!("{:<12}", "Start pose")), start_pose]),
         setting(
             "Arm speed",
             robot
@@ -174,7 +190,7 @@ fn draw_progress(frame: &mut Frame<'_>, rows: &[Rect], progress: &Progress) {
     let [steps, budget, counts, tracking, latencies] = rows else {
         return;
     };
-    let elapsed = progress.elapsed();
+    let elapsed = progress.counts.http;
     gauge_row(
         frame,
         *steps,
@@ -193,8 +209,11 @@ fn draw_progress(frame: &mut Frame<'_>, rows: &[Rect], progress: &Progress) {
     );
     frame.render_widget(
         Paragraph::new(format!(
-            "{:<10}{}    Retries {}",
-            "Late", progress.counts.late, progress.counts.retries
+            "{:<10}{}    Holds {}    Wall {:.1} s",
+            "Late",
+            progress.counts.late,
+            progress.counts.holds,
+            progress.elapsed().as_secs_f64()
         )),
         *counts,
     );
@@ -256,7 +275,7 @@ fn latency_row(frame: &mut Frame<'_>, area: Rect, latencies: &[Duration]) {
     let [name_area, chart_area, text_area] = row_areas(area);
     let millis = |latency: &Duration| u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
     // Replies faster than an eighth of the scale would draw nothing at all.
-    let lowest_bar = millis(&ACT_TIMEOUT).div_ceil(8);
+    let lowest_bar = millis(&(STEP * 2)).div_ceil(8);
     let shown = latencies
         .iter()
         .skip(
@@ -274,7 +293,7 @@ fn latency_row(frame: &mut Frame<'_>, area: Rect, latencies: &[Duration]) {
         });
     frame.render_widget(Paragraph::new("/act"), name_area);
     frame.render_widget(
-        Sparkline::default().data(shown).max(millis(&ACT_TIMEOUT)),
+        Sparkline::default().data(shown).max(millis(&(STEP * 2))),
         chart_area,
     );
     let last = latencies.last().map_or_else(String::new, |latency| {
@@ -320,7 +339,9 @@ fn footer_line(app: &App<'_>, phase: Phase) -> Line<'static> {
             key("t", "change the task"),
             key("q", "quit"),
         ],
-        Phase::MovingToStart | Phase::Running => vec![key("Esc or Ctrl-C", "abort and hold")],
+        Phase::MovingToStart | Phase::Running => {
+            vec![key("Esc or Ctrl-C", "abort and hold")]
+        }
     };
     Line::from(keys.into_iter().flatten().collect::<Vec<_>>())
 }
@@ -339,20 +360,20 @@ mod tests {
     const LIVE: Robot = Robot {
         arm_live: true,
         gripper_live: true,
-        camera_live: None,
-        cameras_live: [true; 3],
+        camera_live: [true; 3],
+        controller_live: true,
+        gripper_controller_live: true,
         at_start: false,
         speed_scaling: Some(100.0),
         gripper_hardware: None,
     };
 
-    fn screen(shared: &Shared, camera: CameraSource, robot: Robot) -> Vec<String> {
+    fn screen(shared: &Shared, robot: Robot) -> Vec<String> {
         let (commands, _received) = mpsc::channel();
         let app = App::new(
             shared,
             commands,
-            "http://127.0.0.1:8000".to_owned(),
-            camera,
+            "https://policy.test:8000".to_owned(),
             "bench_lift_can_v0".to_owned(),
         );
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
@@ -375,14 +396,11 @@ mod tests {
 
     #[test]
     fn connection() {
-        let screen = screen(&shared(), CameraSource::BlackImage, LIVE);
-        assert!(shows(&screen, "http://127.0.0.1:8000"), "{screen:#?}");
+        let screen = screen(&shared(), LIVE);
+        assert!(shows(&screen, "https://policy.test:8000"), "{screen:#?}");
         assert!(shows(&screen, "bench_lift_can_v0"), "{screen:#?}");
-        assert!(shows(&screen, "none, a black frame is sent"), "{screen:#?}");
-        assert!(shows(&screen, "Policy input – black frame"), "{screen:#?}");
-        for name in ["Left camera", "Right camera", "Wrist camera"] {
-            assert!(shows(&screen, &format!("{name:<13}● live")), "{screen:#?}");
-        }
+        assert!(shows(&screen, "Mode    MOCK"), "{screen:#?}");
+        assert!(shows(&screen, "Goals: ready"), "{screen:#?}");
     }
 
     #[test_case(Health::Up, Readiness::Ready => "health up    ready yes"; "ready")]
@@ -390,9 +408,9 @@ mod tests {
     #[test_case(
         Health::Unreachable("refused".to_owned()),
         Readiness::Unreachable("refused".to_owned())
-        => "health down    ready no";
+        => "Policy  Connection refused    https://policy.test:8000";
         "unreachable")]
-    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "health down    ready no"; "http error")]
+    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "Policy  Health endpoint returned HTTP 503    https://policy.test:8000"; "http error")]
     #[test_case(
         Health::Up,
         Readiness::Incompatible { contract: Some("v1".to_owned()), schema_version: Some(2) }
@@ -401,10 +419,10 @@ mod tests {
     fn policy_status(health: Health, readiness: Readiness) -> String {
         let shared = shared();
         *shared.policy.lock() = Some(PolicyStatus { health, readiness });
-        let screen = screen(&shared, CameraSource::BlackImage, LIVE);
+        let screen = screen(&shared, LIVE);
         let header = screen[1].trim_matches([' ', '│']);
         header
-            .trim_start_matches("Policy  http://127.0.0.1:8000    ")
+            .trim_start_matches("Policy  https://policy.test:8000    ")
             .to_owned()
     }
 
@@ -424,60 +442,20 @@ mod tests {
     fn stale_arm() {
         let robot = Robot {
             arm_live: false,
-            camera_live: Some(true),
+            camera_live: [true; 3],
             ..LIVE
         };
-        let screen = screen(&shared(), CameraSource::RosTopic, robot);
+        let screen = screen(&shared(), robot);
         assert!(shows(&screen, "Arm          ● stale"), "{screen:#?}");
         assert!(shows(&screen, "Gripper      ● live"), "{screen:#?}");
-        assert!(shows(&screen, "Policy input ● live"), "{screen:#?}");
+        assert!(shows(&screen, "Wrist camera ● live"), "{screen:#?}");
     }
 
-    #[test_case([true, false, false])]
-    #[test_case([false, true, false])]
-    #[test_case([false, false, true])]
-    fn independent_camera_rows(cameras_live: [bool; 3]) {
-        let robot = Robot {
-            cameras_live,
-            camera_live: Some(false),
-            ..LIVE
-        };
-        let screen = screen(&shared(), CameraSource::RosTopic, robot);
-        for (name, live) in ["Left camera", "Right camera", "Wrist camera"]
-            .into_iter()
-            .zip(cameras_live)
-        {
-            let status = if live { "live" } else { "stale" };
-            assert!(
-                shows(&screen, &format!("{name:<13}● {status}")),
-                "{screen:#?}"
-            );
-        }
-        assert!(shows(&screen, "Policy input ● stale"), "{screen:#?}");
-        assert!(
-            shows(
-                &screen,
-                "Policy input  /right_camera/color/image_raw/compressed"
-            ),
-            "{screen:#?}"
-        );
-        for text in [
-            "Start pose",
-            "Arm speed",
-            "Grip speed",
-            "Grip force",
-            "No episode yet.",
-            "Enter move to the start pose",
-        ] {
-            assert!(shows(&screen, text), "{screen:#?}");
-        }
-    }
-
-    #[test_case(None, None => ["Arm speed    –", "Grip speed   –", "Grip force   –"]; "nothing received")]
+    #[test_case(None, None => ["Arm speed   –", "Grip speed  –", "Grip force  –"]; "nothing received")]
     #[test_case(Some(100.0), Some(GripperHardware::Other)
-        => ["Arm speed    100 %", "Grip speed   – mock", "Grip force   – mock"]; "mock")]
+        => ["Arm speed   100 %", "Grip speed  – mock", "Grip force  – mock"]; "mock")]
     #[test_case(Some(30.0), Some(GripperHardware::Robotiq { speed_multiplier: 1.0, force: 117.5 })
-        => ["Arm speed    30 %", "Grip speed   1.00×", "Grip force   117.5 N"]; "real")]
+        => ["Arm speed   30 %", "Grip speed  1.00×", "Grip force  117.5 N"]; "real")]
     fn speeds_and_force(
         speed_scaling: Option<f64>,
         gripper_hardware: Option<GripperHardware>,
@@ -487,7 +465,7 @@ mod tests {
             gripper_hardware,
             ..LIVE
         };
-        let screen = screen(&shared(), CameraSource::BlackImage, robot);
+        let screen = screen(&shared(), robot);
         ["Arm speed", "Grip speed", "Grip force"].map(|name| {
             screen
                 .iter()
@@ -497,6 +475,39 @@ mod tests {
                 })
                 .unwrap_or_default()
         })
+    }
+
+    #[test_case([true,false,false])]
+    #[test_case([false,true,false])]
+    #[test_case([false,false,true])]
+    fn independent_camera_rows(cameras: [bool; 3]) {
+        let screen = screen(
+            &shared(),
+            Robot {
+                camera_live: cameras,
+                ..LIVE
+            },
+        );
+        for (role, live) in ["Wrist camera", "Left camera", "Right camera"]
+            .into_iter()
+            .zip(cameras)
+        {
+            let state = if live { "live" } else { "stale" };
+            assert!(
+                shows(&screen, &format!("{role:<13}● {state}")),
+                "{screen:#?}"
+            );
+        }
+        for label in [
+            "Start pose",
+            "Arm speed",
+            "Grip speed",
+            "Grip force",
+            "No episode yet.",
+            "Enter move to the start pose",
+        ] {
+            assert!(shows(&screen, label), "{screen:#?}");
+        }
     }
 
     #[test]
@@ -509,15 +520,16 @@ mod tests {
             counts: Counts {
                 steps: 120,
                 late: 3,
-                retries: 1,
+                holds: 1,
+                http: Duration::from_secs(3),
             },
             latencies: vec![Duration::from_millis(23), Duration::from_millis(80)],
             tracking_error: 0.04,
         });
-        let screen = screen(&shared, CameraSource::BlackImage, LIVE);
+        let screen = screen(&shared, LIVE);
         assert!(shows(&screen, "running an episode"), "{screen:#?}");
         assert!(shows(&screen, &format!("120 / {STEPS}")), "{screen:#?}");
-        assert!(shows(&screen, "Late      3    Retries 1"), "{screen:#?}");
+        assert!(shows(&screen, "Late      3    Holds 1"), "{screen:#?}");
         assert!(shows(&screen, "last 80 ms"), "{screen:#?}");
 
         let footer = screen.last().map_or("", String::as_str).trim_end();

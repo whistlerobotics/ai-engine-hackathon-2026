@@ -2,9 +2,9 @@ use crate::{
     episode::Progress,
     gripper::GripperHardware,
     log::Log,
-    policy::{PolicyStatus, Readiness},
-    ros::{CameraSource, Received, Ros},
-    worker::distance_to_start,
+    policy::{Health, PolicyStatus, Readiness},
+    ros::{ROLES, Received, Ros},
+    worker::{TOLERANCE, max_error},
 };
 use parking_lot::Mutex;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -13,9 +13,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::Sender,
 };
-
-/// How close every joint must be to count as at the start pose.
-const AT_START_TOLERANCE: f64 = 0.02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -71,10 +68,9 @@ impl Shared {
 pub struct Robot {
     pub arm_live: bool,
     pub gripper_live: bool,
-    /// None when the selected policy input is a black frame.
-    pub camera_live: Option<bool>,
-    /// Left, right, and wrist feed freshness.
-    pub cameras_live: [bool; 3],
+    pub camera_live: [bool; 3],
+    pub controller_live: bool,
+    pub gripper_controller_live: bool,
     pub at_start: bool,
     /// The pendant's speed slider, in percent; None while stale.
     pub speed_scaling: Option<f64>,
@@ -83,15 +79,15 @@ pub struct Robot {
 }
 
 impl Robot {
-    pub fn read(ros: &Ros) -> Self {
+    pub fn read(ros: &Ros, start: policy_contract::Joints) -> Self {
         let arm = ros.arm().filter(Received::is_fresh);
         Self {
             arm_live: arm.is_some(),
             gripper_live: ros.finger().as_ref().is_some_and(Received::is_fresh),
             camera_live: ros.camera_live(),
-            cameras_live: ros.cameras_live(),
-            at_start: arm
-                .is_some_and(|arm| distance_to_start(&arm.value.position) <= AT_START_TOLERANCE),
+            controller_live: ros.controller_ready(),
+            gripper_controller_live: ros.gripper_ready(),
+            at_start: arm.is_some_and(|arm| max_error(arm.value.position, start) <= TOLERANCE),
             speed_scaling: ros
                 .speed_scaling()
                 .filter(Received::is_fresh)
@@ -156,8 +152,7 @@ pub struct App<'a> {
     pub shared: &'a Shared,
     commands: Sender<Command>,
     pub policy_url: String,
-    pub camera: CameraSource,
-    pub camera_topic: String,
+    pub task_error: Option<String>,
     pub task_id: String,
     /// The new task being typed.
     pub editing: Option<String>,
@@ -165,19 +160,17 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub fn new(
+    pub const fn new(
         shared: &'a Shared,
         commands: Sender<Command>,
         policy_url: String,
-        camera: CameraSource,
         task_id: String,
     ) -> Self {
         Self {
             shared,
             commands,
             policy_url,
-            camera,
-            camera_topic: crate::ros::CAMERA_TOPIC.to_owned(),
+            task_error: None,
             task_id,
             editing: None,
             quit: false,
@@ -192,7 +185,10 @@ impl<'a> App<'a> {
                 let task_id = self.task_id.clone();
                 self.send(Command::RunEpisode { task_id }, Phase::Running, robot);
             }
-            Action::Abort => self.shared.cancel.store(true, Ordering::Relaxed),
+            Action::Abort => {
+                self.shared.cancel.store(true, Ordering::Relaxed);
+                self.shared.log.push("Operator requested abort");
+            }
             Action::Quit => self.quit = true,
             Action::EditTask => self.editing = Some(String::new()),
             Action::TypeTask(c) => self.editing.iter_mut().for_each(|task| task.push(c)),
@@ -211,9 +207,14 @@ impl<'a> App<'a> {
             return;
         }
         self.shared.cancel.store(false, Ordering::Relaxed);
+        self.shared.log.begin_request();
         *self.shared.phase.lock() = phase;
+        self.shared
+            .log
+            .push(format!("Operator requested phase={phase:?}"));
         if self.commands.send(command).is_err() {
             self.shared.log.push("The arm worker has stopped.");
+            self.shared.log.end_request();
         }
     }
 
@@ -223,11 +224,33 @@ impl<'a> App<'a> {
         let episode = matches!(command, Command::RunEpisode { .. });
         let mut reasons = Vec::new();
         if episode {
+            if let Some(reason) = &self.task_error {
+                reasons.push(reason.clone());
+            }
+            if !robot.at_start && robot.arm_live {
+                reasons.push("arm is outside start tolerance".to_owned());
+            }
+            for (role, live) in ROLES.into_iter().zip(robot.camera_live) {
+                if !live {
+                    reasons.push(format!("{role} camera is stale"));
+                }
+            }
+            if !robot.gripper_controller_live {
+                reasons.push("mock gripper controller unavailable".to_owned());
+            }
             match self.shared.policy.lock().as_ref() {
-                Some(status) if status.readiness == Readiness::Ready => {}
+                Some(status)
+                    if status.readiness == Readiness::Ready && status.health == Health::Up => {}
+                Some(status) if status.health != Health::Up => reasons.push(format!(
+                    "the policy health check returned {}",
+                    status.health
+                )),
                 Some(status) => reasons.push(format!("the policy is {}", status.readiness)),
                 None => reasons.push("the policy has not been polled yet".to_owned()),
             }
+        }
+        if !robot.controller_live {
+            reasons.push("mock arm controller inactive, unverified, missing feedback or conflicting subscribers".to_owned());
         }
         if !robot.arm_live {
             reasons.push("the arm's joint state is stale".to_owned());
@@ -325,9 +348,10 @@ mod tests {
     const LIVE: Robot = Robot {
         arm_live: true,
         gripper_live: true,
-        camera_live: None,
-        cameras_live: [true; 3],
-        at_start: false,
+        camera_live: [true; 3],
+        controller_live: true,
+        gripper_controller_live: true,
+        at_start: true,
         speed_scaling: Some(100.0),
         gripper_hardware: None,
     };
@@ -343,13 +367,7 @@ mod tests {
 
     fn app(shared: &Shared) -> (App<'_>, Receiver<Command>) {
         let (commands, received) = mpsc::channel();
-        let app = App::new(
-            shared,
-            commands,
-            "url".to_owned(),
-            CameraSource::BlackImage,
-            "task".to_owned(),
-        );
+        let app = App::new(shared, commands, "url".to_owned(), "task".to_owned());
         (app, received)
     }
 
@@ -374,7 +392,7 @@ mod tests {
         Phase::AtStart,
         Some(Readiness::Incompatible { contract: Some("v1".to_owned()), schema_version: Some(2) }),
         LIVE
-        => "Enter refused: the policy is incompatible: contract v1, schema version 2, not v0, 2.";
+        => "Enter refused: the policy is incompatible: contract v1, schema version 2, not v0, 3.";
         "episode, policy incompatible")]
     #[test_case(Phase::AtStart, Some(Readiness::Ready), Robot { arm_live: false, ..LIVE }
         => "Enter refused: the arm's joint state is stale."; "episode with stale arm")]
@@ -388,6 +406,23 @@ mod tests {
         assert_matches!(received.try_recv(), Err(_));
         assert_eq!(*shared.phase.lock(), phase);
         last_log(&shared)
+    }
+
+    #[test]
+    fn failed_health_is_reported_when_policy_declares_ready() {
+        let shared = shared_with(None);
+        *shared.phase.lock() = Phase::AtStart;
+        *shared.policy.lock() = Some(PolicyStatus {
+            health: Health::HttpStatus(503),
+            readiness: Readiness::Ready,
+        });
+        let (mut app, received) = app(&shared);
+        app.handle(press(KeyCode::Enter), LIVE);
+        assert_matches!(received.try_recv(), Err(_));
+        assert_eq!(
+            last_log(&shared),
+            "Enter refused: the policy health check returned HTTP status 503."
+        );
     }
 
     #[test_case(None, LIVE; "policy not polled")]
