@@ -13,13 +13,11 @@ environment for RViz.
 
 Start the three processes separately:
 
-1. In the policy environment, mount a server certificate and key and start the
-   example policy. Its certificate needs a DNS SAN for its service name
-   (`whistle-policy` in this example).
+1. In the policy environment on the private network, start the example
+   policy under the service name `whistle-policy`.
 
    ```sh
    python3 test-policy.py --bind 0.0.0.0 --port 8080 \
-     --tls-cert /run/policy/server.pem --tls-key /run/policy/server-key.pem \
      --amplitude 0.02 --joints 5 --chunk 4
    ```
 
@@ -39,13 +37,12 @@ Start the three processes separately:
 
 3. In the second Whistle terminal, use the same overlays and discovery
    settings. Use a writable Cargo target and a prepared registry cache if the
-   environment has no internet access. Mount the CA certificate read-only and
-   set the event log to a writable private location.
+   environment has no internet access. Set the event log to a writable private
+   location.
 
    ```sh
    export WHISTLE_MODE=mock
-   export WHISTLE_POLICY_URL=https://whistle-policy:8080
-   export WHISTLE_POLICY_CA=/run/whistle/ca.pem
+   export WHISTLE_POLICY_URL=http://whistle-policy:8080
    export WHISTLE_TASK_PACK="$PWD/task-packs/simulator/manifest.json"
    export WHISTLE_EVENT_LOG=/evidence/runner.jsonl
    cargo run --release --locked -p policy-runner -- --task bolt_to_tray

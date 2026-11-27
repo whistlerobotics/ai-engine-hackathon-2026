@@ -1,13 +1,13 @@
-//! The policy server, over verified HTTPS.
+//! The policy server, over HTTP.
 
-use color_eyre::eyre::{WrapErr, ensure};
+use color_eyre::eyre::ensure;
 use policy_contract::{
     SCHEMA_VERSION,
     wire::{ActRequest, Action, EchoHeaders, InvalidReply, validate},
 };
-use reqwest::{Certificate, Client, Url};
+use reqwest::{Client, Url};
 use serde::Deserialize;
-use std::{fmt, path::Path, time::Duration};
+use std::{fmt, time::Duration};
 use tokio::runtime::Runtime;
 
 const CONTRACT: &str = "v0";
@@ -61,27 +61,6 @@ pub struct PolicyStatus {
 /// transport cause, while the timestamped log retains the complete chain.
 pub fn connection_reason(detail: &str) -> &str {
     let lower = detail.to_ascii_lowercase();
-    if lower.contains("expired") {
-        return "TLS certificate expired";
-    }
-    if lower.contains("not yet valid") {
-        return "TLS certificate is not yet valid";
-    }
-    if lower.contains("not valid for")
-        || lower.contains("notvalidforname")
-        || lower.contains("hostname mismatch")
-    {
-        return "TLS certificate hostname mismatch";
-    }
-    if lower.contains("unknownissuer")
-        || lower.contains("unknown issuer")
-        || lower.contains("unable to get local issuer")
-    {
-        return "TLS certificate issuer is untrusted";
-    }
-    if lower.contains("certificate") {
-        return "TLS certificate verification failed";
-    }
     if lower.contains("refused") {
         return "Connection refused";
     }
@@ -181,28 +160,20 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn new(url: &str, ca_cert: &Path) -> color_eyre::Result<Self> {
+    pub fn new(url: &str) -> color_eyre::Result<Self> {
         let url = Url::parse(url)?;
         ensure!(
-            url.scheme() == "https"
+            url.scheme() == "http"
                 && url.has_host()
                 && url.username().is_empty()
                 && url.password().is_none()
                 && url.path() == "/"
                 && url.query().is_none()
                 && url.fragment().is_none(),
-            "--policy must be an HTTPS origin without credentials or a path"
-        );
-        let ca = std::fs::read(ca_cert).wrap_err("read mounted policy CA certificate")?;
-        let roots = Certificate::from_pem_bundle(&ca)?;
-        ensure!(
-            !roots.is_empty(),
-            "policy CA bundle contains no PEM certificates"
+            "--policy must be an HTTP origin without credentials or a path"
         );
         let client = Client::builder()
-            .https_only(true)
             .no_proxy()
-            .tls_certs_only(roots)
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -325,28 +296,26 @@ mod tests {
 }
 
 #[cfg(test)]
-mod https_tests {
+mod http_tests {
     use super::*;
     use policy_contract::wire::Images;
     use serde_json::Value;
     use std::{
         io::{BufRead, BufReader},
-        path::PathBuf,
+        path::Path,
         process::{Child, Command, Stdio},
     };
 
     struct Peer {
         process: Child,
-        root: PathBuf,
         port: u16,
     }
 
     impl Peer {
-        fn start(validity: &str) -> Self {
-            let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/https_fixture.py");
+        fn start() -> Self {
+            let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/http_fixture.py");
             let mut process = Command::new("python3")
                 .arg(script)
-                .arg(validity)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()
@@ -355,20 +324,12 @@ mod https_tests {
             BufReader::new(process.stdout.take().unwrap())
                 .read_line(&mut line)
                 .unwrap();
-            let (root, port) = serde_json::from_str(&line).unwrap();
-            Self {
-                process,
-                root,
-                port,
-            }
+            let port = line.trim().parse().unwrap();
+            Self { process, port }
         }
 
-        fn client(&self, host: &str, ca: &str) -> Policy {
-            Policy::new(
-                &format!("https://{host}:{}", self.port),
-                &self.root.join(ca),
-            )
-            .unwrap()
+        fn client(&self) -> Policy {
+            Policy::new(&format!("http://127.0.0.1:{}", self.port)).unwrap()
         }
     }
 
@@ -380,9 +341,9 @@ mod https_tests {
     }
 
     #[test]
-    fn verified_https_and_bounded_calls_without_retry() {
-        let peer = Peer::start("1");
-        let client = peer.client("localhost", "ca.pem");
+    fn direct_http_and_bounded_calls_without_retry() {
+        let peer = Peer::start();
+        let client = peer.client();
         assert_eq!(
             client.status(),
             PolicyStatus {
@@ -397,7 +358,7 @@ mod https_tests {
         let sample = &fixture["request"];
         let goals: Images = serde_json::from_value(sample["goal"].clone()).unwrap();
         let mut request = ActRequest {
-            episode_id: "https-test",
+            episode_id: "http-test",
             step: 7,
             task_id: "bolt_to_tray",
             instruction: sample["instruction"].as_str().unwrap(),
@@ -418,31 +379,5 @@ mod https_tests {
         std::assert_matches!(timeout, Err(ActError::Transport(_)));
         let (_, body) = client.runtime.block_on(client.get("/healthz")).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["calls"], 2);
-        for (host, ca, expected) in [
-            (
-                "localhost",
-                "untrusted.pem",
-                "TLS certificate issuer is untrusted",
-            ),
-            ("127.0.0.1", "ca.pem", "TLS certificate hostname mismatch"),
-        ] {
-            let Health::Unreachable(reason) = peer.client(host, ca).status().health else {
-                panic!("unexpected TLS success")
-            };
-            assert_eq!(connection_reason(&reason), expected, "{reason}");
-        }
-    }
-
-    #[test]
-    fn expired_policy_certificate_is_refused() {
-        let peer = Peer::start("-1");
-        let Health::Unreachable(reason) = peer.client("localhost", "ca.pem").status().health else {
-            panic!("unexpected TLS success")
-        };
-        assert_eq!(
-            connection_reason(&reason),
-            "TLS certificate expired",
-            "{reason}"
-        );
     }
 }

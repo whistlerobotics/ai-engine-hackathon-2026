@@ -36,9 +36,9 @@ do. Extra arguments go through to the launch file or the program, e.g. `mise run
 ### On mock hardware
 
 Use the [Spark schema v3 workflow](ROS_DRIVER_SIMULATION.md#schema-v3-mock-run)
-to start the scripted HTTPS policy, mock ROS, and the Cargo TUI in separate
+to start the scripted HTTP policy, mock ROS, and the Cargo TUI in separate
 terminals. The Rust runner uses all three live camera streams and the task's
-three goal views, and requires a configured CA and a mock ROS domain.
+three goal views, and requires the isolated mock ROS domain.
 
 ### Hand guiding
 

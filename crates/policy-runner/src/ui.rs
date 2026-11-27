@@ -373,7 +373,7 @@ mod tests {
         let app = App::new(
             shared,
             commands,
-            "https://policy.test:8000".to_owned(),
+            "http://policy.test:8000".to_owned(),
             "bench_lift_can_v0".to_owned(),
         );
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn connection() {
         let screen = screen(&shared(), LIVE);
-        assert!(shows(&screen, "https://policy.test:8000"), "{screen:#?}");
+        assert!(shows(&screen, "http://policy.test:8000"), "{screen:#?}");
         assert!(shows(&screen, "bench_lift_can_v0"), "{screen:#?}");
         assert!(shows(&screen, "Mode    MOCK"), "{screen:#?}");
         assert!(shows(&screen, "Goals: ready"), "{screen:#?}");
@@ -408,9 +408,9 @@ mod tests {
     #[test_case(
         Health::Unreachable("refused".to_owned()),
         Readiness::Unreachable("refused".to_owned())
-        => "Policy  Connection refused    https://policy.test:8000";
+        => "Policy  Connection refused    http://policy.test:8000";
         "unreachable")]
-    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "Policy  Health endpoint returned HTTP 503    https://policy.test:8000"; "http error")]
+    #[test_case(Health::HttpStatus(503), Readiness::HttpStatus(503) => "Policy  Health endpoint returned HTTP 503    http://policy.test:8000"; "http error")]
     #[test_case(
         Health::Up,
         Readiness::Incompatible { contract: Some("v1".to_owned()), schema_version: Some(2) }
@@ -422,7 +422,7 @@ mod tests {
         let screen = screen(&shared, LIVE);
         let header = screen[1].trim_matches([' ', '│']);
         header
-            .trim_start_matches("Policy  https://policy.test:8000    ")
+            .trim_start_matches("Policy  http://policy.test:8000    ")
             .to_owned()
     }
 

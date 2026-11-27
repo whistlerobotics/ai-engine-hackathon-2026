@@ -1,9 +1,7 @@
 # Policy HTTP contract v0, schema version 3
 
-The runner connects directly to the contestant's HTTPS server. The server name in
-`--policy` must match the certificate's DNS subject alternative name. The runner
-trusts the PEM CA supplied as `--ca-cert` and verifies the certificate chain,
-server name and expiry.
+The mock runner connects directly to a policy server over HTTP on the
+private container network. Set `--policy` to its HTTP origin.
 
 - `GET /healthz` returns 200 once the server responds.
 - `GET /readyz` returns 200 with `{"ready":true,"contract":"v0","schema_version":3}`

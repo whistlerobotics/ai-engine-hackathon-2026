@@ -12,8 +12,6 @@ import argparse
 import base64
 import json
 import math
-import os
-import ssl
 import threading
 import time
 from collections.abc import Callable
@@ -525,32 +523,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-class PolicyServer(ThreadingHTTPServer):
-    daemon_threads = True
-
-    @override
-    def process_request_thread(self, request, client_address) -> None:
-        if isinstance(request, ssl.SSLSocket):
-            timeout = request.gettimeout()
-            request.settimeout(5)
-            try:
-                request.do_handshake()
-            except OSError as exc:
-                print(f"TLS handshake failed: {exc}", flush=True)
-                self.shutdown_request(request)
-                return
-            request.settimeout(timeout)
-        super().process_request_thread(request, client_address)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--port", type=int, default=8000)
     _ = parser.add_argument("--bind", "--host", default="127.0.0.1", help="address to listen on")
-    _ = parser.add_argument("--tls-cert", default=os.environ.get("RC_POLICY_TLS_CERT"),
-                            help="PEM certificate chain (or RC_POLICY_TLS_CERT)")
-    _ = parser.add_argument("--tls-key", default=os.environ.get("RC_POLICY_TLS_KEY"),
-                            help="PEM private key (or RC_POLICY_TLS_KEY)")
     _ = parser.add_argument("--load-time", type=float, default=0.0, help="seconds until ready")
     _ = parser.add_argument("--contract", default="v0", help="the contract /readyz reports")
     _ = parser.add_argument(
@@ -596,26 +572,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.replay is not None and args.offset is not None:
         parser.error("--replay and --offset are alternatives")
-    if bool(args.tls_cert) != bool(args.tls_key):
-        parser.error("set both --tls-cert and --tls-key to serve HTTPS")
-
-    context = None
-    if args.tls_cert and args.tls_key:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        try:
-            context.load_cert_chain(args.tls_cert, args.tls_key, password="")
-        except (OSError, ValueError) as exc:
-            parser.error(f"cannot load TLS certificate and key: {exc}")
 
     Handler.policy = Policy(args)
-    with PolicyServer((args.bind, args.port), Handler) as server:
-        if context is not None:
-            server.socket = context.wrap_socket(
-                server.socket, server_side=True, do_handshake_on_connect=False
-            )
-        scheme = "https" if context is not None else "http"
-        print(f"Stand-in policy on {scheme}://{args.bind}:{server.server_port}", flush=True)
+    with ThreadingHTTPServer((args.bind, args.port), Handler) as server:
+        print(f"Stand-in policy on http://{args.bind}:{server.server_port}", flush=True)
         server.serve_forever()
 
 

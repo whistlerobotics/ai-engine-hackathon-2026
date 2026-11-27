@@ -50,8 +50,6 @@ struct Args {
     task: String,
     #[arg(long, env = "WHISTLE_MODE", value_parser=["mock","real"])]
     mode: String,
-    #[arg(long, env = "WHISTLE_POLICY_CA")]
-    ca_cert: PathBuf,
     #[arg(long, env = "WHISTLE_TASK_PACK")]
     task_pack: PathBuf,
     #[arg(long, env = "WHISTLE_EVENT_LOG")]
@@ -109,8 +107,8 @@ fn main() -> Result<()> {
         "MOCK domain=77 pack={} start_pose_rad={:?}",
         pack.revision, pack.start
     ));
-    let policy = Policy::new(&args.policy, &args.ca_cert)?;
-    let monitored_policy = Policy::new(&args.policy, &args.ca_cert)?;
+    let policy = Policy::new(&args.policy)?;
+    let monitored_policy = Policy::new(&args.policy)?;
     let ros = Ros::new(
         [&args.wrist_topic, &args.left_topic, &args.right_topic],
         Arc::clone(&log),

@@ -21,7 +21,7 @@ ros-env.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-reqwest = { workspace = true, features = ["rustls", "json"] }
+reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 sha2.workspace = true
 
