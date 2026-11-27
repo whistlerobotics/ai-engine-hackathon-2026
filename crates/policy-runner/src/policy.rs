@@ -9,6 +9,7 @@ use std::{fmt, time::Duration};
 
 const CONTRACT: &str = "v0";
 pub const ACT_TIMEOUT: Duration = Duration::from_millis(100);
+const PLANNING_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
@@ -172,11 +173,16 @@ impl Policy {
     }
 
     pub fn act(&self, request: &ActRequest<'_>) -> Result<Vec<Action>, ActError> {
+        let timeout = if request.step == 0 {
+            PLANNING_TIMEOUT
+        } else {
+            ACT_TIMEOUT
+        };
         let mut response = self
             .agent
             .post(format!("{}/act", self.url))
             .config()
-            .timeout_global(Some(ACT_TIMEOUT))
+            .timeout_global(Some(timeout))
             .build()
             .send_json(request)?;
 
@@ -203,7 +209,13 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use policy_contract::wire::{Images, Proprio};
     use serde_json::{Value, json};
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        thread,
+    };
     use test_case::test_case;
 
     fn ok(body: &Value) -> (u16, String) {
@@ -233,5 +245,62 @@ mod tests {
     #[test_case(Err(ureq::Error::ConnectionFailed) => matches Health::Unreachable(_); "unreachable")]
     fn health_of(reply: HttpReply) -> Health {
         Health::from(reply)
+    }
+
+    #[test_case(0, true)]
+    #[test_case(1, false)]
+    fn delayed_planning_does_not_relax_control_deadlines(step: u32, succeeds: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; content_length]).unwrap();
+            thread::sleep(Duration::from_millis(250));
+            let body = json!({
+                "episode_id": "planning-test", "step": step,
+                "action": {"type": "joint_delta", "values": [0, 0, 0, 0, 0, 0], "gripper": 1.0}
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-RC-Episode-Id: planning-test\r\nX-RC-Step: {step}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let request = ActRequest {
+            episode_id: "planning-test",
+            step,
+            task_id: "bolt_to_tray",
+            schema_version: SCHEMA_VERSION,
+            images: Images { top: String::new() },
+            proprio: Proprio {
+                joint_pos: [0.0; 6],
+                joint_vel: [0.0; 6],
+                gripper: 1.0,
+                ee_pos: [0.0; 3],
+                ee_quat: [1.0, 0.0, 0.0, 0.0],
+            },
+        };
+        let reply = Policy::new(&format!("http://{address}")).act(&request);
+        if succeeds {
+            assert_eq!(reply.unwrap().len(), 1);
+        } else {
+            std::assert_matches!(reply, Err(ActError::Transient(_)));
+        }
+        server.join().unwrap();
     }
 }

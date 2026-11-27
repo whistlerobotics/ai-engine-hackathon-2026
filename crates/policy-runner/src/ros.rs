@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use policy_contract::{
     ARM_JOINTS, Joints,
     gripper::FINGER_JOINT,
-    image::{BLACK_JPEG, check_jpeg},
+    image::{BLACK_JPEG, check_jpeg_size},
 };
 use rclrs::{
     Context, CreateBasicExecutor, IntoPrimitiveOptions, Node, Publisher, SpinOptions, Subscription,
@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CAMERA_TOPIC: &str = "/camera/color/image_raw/compressed";
+pub const CAMERA_TOPIC: &str = "/right_camera/color/image_raw/compressed";
 const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scaling";
 const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";
@@ -58,6 +58,7 @@ pub struct Ros {
     speed_scaling: Latest<f64>,
     gripper_hardware: Arc<Mutex<Option<GripperHardware>>>,
     camera: Camera,
+    camera_size: (usize, usize),
     trajectory: Publisher<JointTrajectory>,
     finger_command: Publisher<Float64MultiArray>,
     _subscriptions: Subscriptions,
@@ -86,7 +87,12 @@ struct Subscriptions {
 }
 
 impl Ros {
-    pub fn new(source: CameraSource, log: Arc<Log>) -> Result<Self> {
+    pub fn new(
+        source: CameraSource,
+        camera_topic: &str,
+        camera_size: (usize, usize),
+        log: Arc<Log>,
+    ) -> Result<Self> {
         let context = Context::default_from_env()?;
         let mut executor = context.create_basic_executor();
         let node = executor.create_node("policy_runner")?;
@@ -137,7 +143,7 @@ impl Ros {
                 // The camera driver publishes best-effort, which a reliable subscription wouldn't
                 // match.
                 let subscription =
-                    node.create_subscription(CAMERA_TOPIC.best_effort().keep_last(1), {
+                    node.create_subscription(camera_topic.best_effort().keep_last(1), {
                         let frame = Arc::clone(&frame);
                         move |msg: CompressedImage| store(&frame, msg.data)
                     })?;
@@ -164,6 +170,7 @@ impl Ros {
             speed_scaling,
             gripper_hardware,
             camera,
+            camera_size,
             trajectory,
             finger_command,
             _subscriptions: Subscriptions {
@@ -214,7 +221,7 @@ impl Ros {
                 if age > STALE_AFTER {
                     bail!("the latest camera frame is {} ms old", age.as_millis());
                 }
-                check_jpeg(&frame.value)?;
+                check_jpeg_size(&frame.value, self.camera_size)?;
                 Ok(BASE64.encode(&frame.value))
             }
         }

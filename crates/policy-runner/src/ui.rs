@@ -3,7 +3,7 @@ use crate::{
     episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEPS},
     gripper::GripperHardware,
     policy::{ACT_TIMEOUT, Health, Readiness},
-    ros::{CAMERA_TOPIC, CameraSource},
+    ros::CameraSource,
 };
 use policy_contract::STEP;
 use ratatui::{
@@ -49,7 +49,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
         policy.push(Span::raw("    polling paused during the episode"));
     }
     let camera = match app.camera {
-        CameraSource::RosTopic => CAMERA_TOPIC,
+        CameraSource::RosTopic => app.camera_topic.as_str(),
         CameraSource::BlackImage => "none, a black frame is sent",
     };
     let connection = Line::from(format!("Task    {}    Camera  {camera}", app.task_id));

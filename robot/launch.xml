@@ -5,7 +5,8 @@
   <!-- Lowercase, not Python's True: ur_control.launch.py compares use_mock_hardware to "true". -->
   <let name="mock" value="$(eval '\'true\' if \'$(var robot)\' == \'mock\' else \'false\'')"/>
   <let name="real" value="$(eval '\'true\' if \'$(var robot)\' == \'real\' else \'false\'')"/>
-  <arg name="camera" default="true" description="Start the Gemini 336"/>
+  <arg name="camera" default="false" description="Start camera drivers here; leave false when the three standalone cameras are running"/>
+  <arg name="three_view" default="false" description="Start all three cameras (left, right, wrist) at 640x360 instead of the right one alone at 640x480"/>
   <arg name="rviz" default="false" description="Start RViz showing the arm and gripper"/>
   <arg name="headless_mode" default="true"
        description="Send the driver's program on connect, which needs the robot in Remote Control mode; false to play External Control on the pendant in Local mode"/>
@@ -32,10 +33,62 @@
     <arg name="launch_rviz" value="false"/>
   </include>
 
-  <!-- compressed_image_transport publishes each color frame as JPEG on .../image_raw/compressed. -->
-  <include file="$(find-pkg-share orbbec_camera)/launch/gemini_330_series.launch.py" if="$(var camera)">
+  <!-- compressed_image_transport publishes each color frame as JPEG on .../image_raw/compressed.
+       Cameras are bound by serial number, so a re-plugged cable can't swap them:
+         right = CP999450001G (Gemini 336, the taller top-down side camera)
+         left  = CP999450005M (Gemini 336, the lower side camera)
+         wrist = CPBDB53000CY (Gemini 335Lg)
+       Default: reuse the separately launched cameras; camera:=true starts drivers here.
+       camera:=true three_view:=false: the right 336 alone on /camera at 640x480.
+       three_view:=true: all three at 640x360 on /left_camera, /right_camera and /wrist_camera,
+       for Reality Check policies via tools/three_view_proxy.py (run the runner with no camera). -->
+  <let name="single_view" value="$(eval '\'true\' if \'$(var camera)\' == \'true\' and \'$(var three_view)\' != \'true\' else \'false\'')"/>
+  <let name="multi_view" value="$(eval '\'true\' if \'$(var camera)\' == \'true\' and \'$(var three_view)\' == \'true\' else \'false\'')"/>
+  <include file="$(find-pkg-share orbbec_camera)/launch/gemini_330_series.launch.py" if="$(var single_view)">
+    <arg name="camera_name" value="camera"/>
+    <arg name="serial_number" value="CP999450001G"/>
+    <arg name="device_num" value="1"/>
     <arg name="color_width" value="640"/>
     <arg name="color_height" value="480"/>
+    <arg name="color_fps" value="30"/>
+    <arg name="enable_depth" value="false"/>
+    <arg name="enable_left_ir" value="false"/>
+    <arg name="enable_right_ir" value="false"/>
+    <arg name="enable_point_cloud" value="false"/>
+    <arg name="enable_colored_point_cloud" value="false"/>
+  </include>
+  <include file="$(find-pkg-share orbbec_camera)/launch/gemini_330_series.launch.py" if="$(var multi_view)">
+    <arg name="camera_name" value="left_camera"/>
+    <arg name="serial_number" value="CP999450005M"/>
+    <arg name="device_num" value="3"/>
+    <arg name="color_width" value="640"/>
+    <arg name="color_height" value="360"/>
+    <arg name="color_fps" value="30"/>
+    <arg name="enable_depth" value="false"/>
+    <arg name="enable_left_ir" value="false"/>
+    <arg name="enable_right_ir" value="false"/>
+    <arg name="enable_point_cloud" value="false"/>
+    <arg name="enable_colored_point_cloud" value="false"/>
+  </include>
+  <include file="$(find-pkg-share orbbec_camera)/launch/gemini_330_series.launch.py" if="$(var multi_view)">
+    <arg name="camera_name" value="right_camera"/>
+    <arg name="serial_number" value="CP999450001G"/>
+    <arg name="device_num" value="3"/>
+    <arg name="color_width" value="640"/>
+    <arg name="color_height" value="360"/>
+    <arg name="color_fps" value="30"/>
+    <arg name="enable_depth" value="false"/>
+    <arg name="enable_left_ir" value="false"/>
+    <arg name="enable_right_ir" value="false"/>
+    <arg name="enable_point_cloud" value="false"/>
+    <arg name="enable_colored_point_cloud" value="false"/>
+  </include>
+  <include file="$(find-pkg-share orbbec_camera)/launch/gemini_330_series.launch.py" if="$(var multi_view)">
+    <arg name="camera_name" value="wrist_camera"/>
+    <arg name="serial_number" value="CPBDB53000CY"/>
+    <arg name="device_num" value="3"/>
+    <arg name="color_width" value="640"/>
+    <arg name="color_height" value="360"/>
     <arg name="color_fps" value="30"/>
     <arg name="enable_depth" value="false"/>
     <arg name="enable_left_ir" value="false"/>

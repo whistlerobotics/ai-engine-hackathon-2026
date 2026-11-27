@@ -40,18 +40,20 @@ In three terminals:
 ```bash
 mise run mock-robot
 mise run test-policy
-mise run policy-runner -- --task <task_id>
+mise run policy-runner -- --task <task_id> --policy http://127.0.0.1:8000 --no-camera
 ```
 
-`mock-robot` brings up the UR12e and the gripper on mock hardware, and the real Gemini 336 unless
-given `camera:=false`. `test-policy` serves a stand-in policy on port 8000; `mise run test-policy --
---help` lists the replies it can send, including late, chunked and invalid ones.
+`mock-robot` brings up the UR12e and the gripper on mock hardware. Pass `camera:=true` to
+start the real Gemini 336 here when no separate camera driver is running. `test-policy` serves a
+stand-in policy on port 8000; `mise run test-policy -- --help` lists the replies it can send,
+including late, chunked and invalid ones.
 
 `mise run test-policy -- --replay recording/<task_id>/<episode_id>.json` plays back a recorded
 episode's motion and gripper instead, relative to wherever the arm starts.
 
 The policy runner is a terminal UI that runs episodes of the policy against the arm. It sends the
-camera's frames from `/camera/color/image_raw/compressed`, or a black frame if given `--no-camera`.
+camera's frames from `/right_camera/color/image_raw/compressed` in this local setup;
+`--camera-topic` selects another topic, and `--no-camera` sends a black frame instead.
 An episode fails as soon as the camera's frame is missing or stale, so without a camera plugged in,
 pass `--no-camera`.
 
@@ -64,7 +66,9 @@ mise run policy-runner -- --task <task_id> --policy <url>
 
 By default `real-robot` sends the driver's program on connect, which needs the arm in Remote Control
 mode; with `headless_mode:=false`, play External Control on the pendant in Local mode instead. It
-also starts the Gemini 336 unless given `camera:=false`.
+reuses the separately running cameras by default in this local setup. Pass `camera:=true`
+only when this launch should own the camera drivers. For all three camera feeds and run
+recording, see [THREE_CAMERA_RECORDING.md](THREE_CAMERA_RECORDING.md).
 
 ### Hand guiding
 

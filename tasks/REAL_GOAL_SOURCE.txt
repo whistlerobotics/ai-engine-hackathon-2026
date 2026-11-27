@@ -1,0 +1,4 @@
+Real wrist goal captured 2026-11-27T16:19:40Z (ROS stamp 1795796380.327799000).
+Source: /wrist_camera/color/image_raw/compressed; Gemini 335Lg CPBDB53000CY.
+Native resolution: 640x360; silver bolt visibly in tray.
+Saved as bolt_to_tray.wrist-goal.jpg; simulation sample bolt_to_tray.jpg remains separate.

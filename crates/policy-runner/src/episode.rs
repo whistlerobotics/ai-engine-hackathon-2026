@@ -230,6 +230,8 @@ impl<'a> Episode<'a> {
             let sent = Instant::now();
             match self.policy.act(&request) {
                 Ok(actions) => {
+                    self.check_cancel_and_budget()?;
+                    let _ = self.observe()?;
                     self.publish(|progress| progress.latencies.push(sent.elapsed()));
                     return Ok(actions);
                 }

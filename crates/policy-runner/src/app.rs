@@ -154,6 +154,7 @@ pub struct App<'a> {
     commands: Sender<Command>,
     pub policy_url: String,
     pub camera: CameraSource,
+    pub camera_topic: String,
     pub task_id: String,
     /// The new task being typed.
     pub editing: Option<String>,
@@ -161,7 +162,7 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub const fn new(
+    pub fn new(
         shared: &'a Shared,
         commands: Sender<Command>,
         policy_url: String,
@@ -173,6 +174,7 @@ impl<'a> App<'a> {
             commands,
             policy_url,
             camera,
+            camera_topic: crate::ros::CAMERA_TOPIC.to_owned(),
             task_id,
             editing: None,
             quit: false,

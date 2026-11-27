@@ -7,6 +7,13 @@ pub enum FrameError {
     NotJpeg,
     #[error("the camera frame is {width}×{height}, not {}×{}", IMAGE_SIZE.0, IMAGE_SIZE.1)]
     WrongSize { width: usize, height: usize },
+    #[error("the camera frame is {width}×{height}, not {expected_width}×{expected_height}")]
+    UnexpectedSize {
+        width: usize,
+        height: usize,
+        expected_width: usize,
+        expected_height: usize,
+    },
 }
 
 /// Whether `jpeg` is what `images.top` must be, judged from its header alone.
@@ -15,14 +22,28 @@ pub enum FrameError {
 ///
 /// How it falls short.
 pub fn check_jpeg(jpeg: &[u8]) -> Result<(), FrameError> {
+    check_jpeg_size(jpeg, IMAGE_SIZE)
+}
+
+/// Checks a native camera frame against the explicitly configured input dimensions.
+pub fn check_jpeg_size(jpeg: &[u8], expected: (usize, usize)) -> Result<(), FrameError> {
     if !matches!(imagesize::image_type(jpeg), Ok(imagesize::ImageType::Jpeg)) {
         return Err(FrameError::NotJpeg);
     }
     let size = imagesize::blob_size(jpeg).map_err(|_| FrameError::NotJpeg)?;
-    if (size.width, size.height) != IMAGE_SIZE {
-        return Err(FrameError::WrongSize {
-            width: size.width,
-            height: size.height,
+    if (size.width, size.height) != expected {
+        return Err(if expected == IMAGE_SIZE {
+            FrameError::WrongSize {
+                width: size.width,
+                height: size.height,
+            }
+        } else {
+            FrameError::UnexpectedSize {
+                width: size.width,
+                height: size.height,
+                expected_width: expected.0,
+                expected_height: expected.1,
+            }
         });
     }
     Ok(())
@@ -40,6 +61,12 @@ mod tests {
         0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xFF, 0xD9,
     ];
     const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    #[test_case((1280, 800) => Ok(()); "configured native frame")]
+    #[test_case((640, 360) => Err(FrameError::UnexpectedSize { width: 1280, height: 800, expected_width: 640, expected_height: 360 }); "reject wrong native dimensions")]
+    fn configured_size(expected: (usize, usize)) -> Result<(), FrameError> {
+        check_jpeg_size(JPEG_1280X800, expected)
+    }
 
     #[test_case(BLACK_JPEG => Ok(()); "valid frame")]
     #[test_case(PNG_SIGNATURE => Err(FrameError::NotJpeg); "not a JPEG")]

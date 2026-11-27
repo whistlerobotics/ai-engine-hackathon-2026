@@ -16,7 +16,7 @@ use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
 };
-use ros::{CameraSource, Ros};
+use ros::{CAMERA_TOPIC, CameraSource, Ros};
 use std::{
     io::{self, IsTerminal},
     sync::{
@@ -39,14 +39,30 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 #[derive(Parser)]
 struct Args {
     /// The policy server's base URL.
-    #[arg(long, default_value = "http://127.0.0.1:8000")]
+    #[arg(long, default_value = "http://127.0.0.1:18081")]
     policy: String,
     /// The `task_id` sent to the policy; `t` changes it between episodes.
     #[arg(long)]
     task: String,
+    /// Compressed-image topic used for camera frames and the live indicator.
+    #[arg(long, default_value = CAMERA_TOPIC, conflicts_with = "no_camera")]
+    camera_topic: String,
+    /// Native compressed-image dimensions, WIDTHxHEIGHT; frames are not resized.
+    #[arg(long, default_value = "640x360", value_parser = camera_size, conflicts_with = "no_camera")]
+    camera_size: (usize, usize),
     /// Send a black frame instead of the camera's.
     #[arg(long)]
     no_camera: bool,
+}
+
+fn camera_size(value: &str) -> std::result::Result<(usize, usize), String> {
+    let (width, height) = value.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
+    let width: usize = width.parse().map_err(|_| "invalid camera width")?;
+    let height: usize = height.parse().map_err(|_| "invalid camera height")?;
+    if !(1..=8192).contains(&width) || !(1..=8192).contains(&height) {
+        return Err("camera dimensions must be between 1 and 8192".to_owned());
+    }
+    Ok((width, height))
 }
 
 fn main() -> Result<()> {
@@ -65,7 +81,12 @@ fn main() -> Result<()> {
     } else {
         CameraSource::RosTopic
     };
-    let ros = Ros::new(camera, Arc::clone(&log))?;
+    let ros = Ros::new(
+        camera,
+        &args.camera_topic,
+        args.camera_size,
+        Arc::clone(&log),
+    )?;
     let shared = Shared::new(log);
 
     // After color-eyre's panic hook, so the terminal is restored before a panic is printed.
@@ -78,13 +99,14 @@ fn main() -> Result<()> {
         });
         scope.spawn(|| monitor(&monitored_policy, &shared));
 
-        let app = App::new(
+        let mut app = App::new(
             &shared,
             commands,
             args.policy.clone(),
             camera,
             args.task.clone(),
         );
+        app.camera_topic = args.camera_topic.clone();
         let stop = StopOnDrop(&shared);
         let ui = run_ui(terminal, app, &ros, || worker.is_finished());
         drop(stop);
@@ -159,5 +181,20 @@ fn monitor(policy: &Policy, shared: &Shared) {
         while Instant::now() < next_poll && !shared.quit.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+    use test_case::test_case;
+
+    #[test_case("640x360" => matches Ok((640, 360)))]
+    #[test_case("640x480" => matches Ok((640, 480)))]
+    #[test_case("0x480" => matches Err(_))]
+    #[test_case("640x0" => matches Err(_))]
+    #[test_case("bad" => matches Err(_))]
+    fn dimensions(value: &str) -> std::result::Result<(usize, usize), String> {
+        camera_size(value)
     }
 }

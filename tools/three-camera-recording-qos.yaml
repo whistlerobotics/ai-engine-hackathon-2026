@@ -1,0 +1,40 @@
+/left_camera/color/image_raw/compressed:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/right_camera/color/image_raw/compressed:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/wrist_camera/color/image_raw/compressed:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/left_camera/color/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/right_camera/color/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/wrist_camera/color/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/tf:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 100

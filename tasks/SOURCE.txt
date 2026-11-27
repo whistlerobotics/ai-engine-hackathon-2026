@@ -1,0 +1,4 @@
+Task: bolt_to_tray
+Instruction and goal.jpg copied from policy scripts/sample_obs at code commit 36fbff1e23a9f7a076637cab0e90fb99be7fb275.
+This is a simulation sample goal, not a photographed real-arm goal.
+PR7 camera proxy alone does not add task context to Whistle runner.
