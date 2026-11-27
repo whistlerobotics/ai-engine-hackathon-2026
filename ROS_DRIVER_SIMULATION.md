@@ -58,3 +58,30 @@ build and three-camera launchers select 640x360. Frames are not resized.
 
 Mock camera readers use Fast DDS UDP on loopback to avoid stale shared-memory
 transport state. Docker networking remains disabled for this container.
+
+## Robot and camera viewer
+
+With the mock driver already running, open a second terminal on Spark and run:
+
+```bash
+bash ~/run-rc-ros-rviz.sh
+```
+
+RViz opens on the Spark desktop and can be watched through Moonlight. It shows
+the mock UR12e and gripper plus the live left, right and wrist camera images.
+The camera panels are independent images, not calibrated projections onto the
+mock robot. RViz is only a viewer; use the policy runner terminal to start or
+abort an episode. Closing RViz leaves the mock driver running.
+
+The host launcher is preserved in `tools/spark/run-rc-ros-rviz.sh`; its display
+configuration is `robot/mock-view.rviz`. Run RViz inside the existing isolated
+mock container so it shares the driver's ROS discovery. A filesystem link to the
+local X11 socket provides desktop output without enabling Docker networking;
+the current Spark layout puts `/tmp` and the checkout on the same filesystem.
+Desktop authentication is copied into the container's `/tmp` with user-only
+permissions and is not stored in the repository. The launcher expects Spark's
+active X11 desktop on display `:0`.
+
+Verified on Spark: RViz's global status is OK, the arm and gripper render, and
+all three image panels receive live compressed camera frames. The viewer has no
+trajectory or gripper command publishers.

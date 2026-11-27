@@ -14,6 +14,12 @@ and gripper. All three camera feeds are relayed into domain 77; the real stack
 stays on domain 42. This test uses the deterministic test policy, not Qwen.
 Enter moves the mock arm to start; Enter again runs; Esc aborts; q quits while idle.
 The terminal shows camera status, not a video preview.
+To open the 3D robot and three live camera panels, use a second Spark terminal:
+
+```bash
+bash ~/run-rc-ros-rviz.sh
+```
+
 See [ROS driver simulation](ROS_DRIVER_SIMULATION.md).
 
 The host scripts are preserved under `tools/spark/`. They describe the current
