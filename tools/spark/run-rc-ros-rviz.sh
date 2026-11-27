@@ -28,7 +28,8 @@ docker exec -i "$container" bash -lc 'umask 077; cat > /tmp/rviz.Xauthority' < "
 exec docker exec \
     -e DISPLAY=:0 -e XAUTHORITY=/tmp/rviz.Xauthority \
     -e QT_X11_NO_MITSHM=1 -e LIBGL_ALWAYS_SOFTWARE=1 \
-    -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    -e ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT \
+    -e FASTDDS_DEFAULT_PROFILES_FILE=/home/rosdev/ros2_ws/tools/mock-fastdds.xml \
     "$container" bash -lc '
 source /opt/ros/kilted/setup.bash
 source /home/rosdev/robotiq_ws/install/local_setup.sh

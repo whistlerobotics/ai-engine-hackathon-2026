@@ -125,7 +125,9 @@ def check(node, max_age):
                                     "frame_id": message.header.frame_id}
                               for role, (_, message) in latest.items()}), flush=True)
             return
-    raise RuntimeError(f"Missing fresh mock-domain camera feeds; received {list(latest)}")
+    publishers = {role: node.count_publishers(topic(role, "image")) for role in ROLES}
+    raise RuntimeError(f"Missing fresh mock-domain camera feeds; received {list(latest)}; "
+                       f"discovered publishers {publishers}")
 
 
 def main():
@@ -139,7 +141,9 @@ def main():
     if os.environ.get("ROS_DOMAIN_ID") != expected:
         parser.error(f"{args.mode} requires ROS domain {expected}")
     if expected == "77":
-        os.environ["FASTDDS_BUILTIN_TRANSPORTS"] = "UDPv4"
+        # Kilted LOCALHOST discovery adds SHM transports even when UDPv4 is requested.
+        os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SYSTEM_DEFAULT"
+        os.environ["FASTDDS_DEFAULT_PROFILES_FILE"] = str(Path(__file__).with_name("mock-fastdds.xml"))
     guard = None
     if args.mode != "check":
         lock = args.socket.with_suffix(".lock") if args.mode == "export" else Path("/tmp/mock-cameras-import.lock")

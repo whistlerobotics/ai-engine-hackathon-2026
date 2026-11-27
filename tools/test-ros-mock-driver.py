@@ -28,7 +28,8 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("/tmp/ros-driver-check"))
     args = parser.parse_args()
     assert os.environ.get("ROS_DOMAIN_ID") == "77", "test requires isolated ROS domain 77"
-    os.environ["FASTDDS_BUILTIN_TRANSPORTS"] = "UDPv4"
+    os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "SYSTEM_DEFAULT"
+    os.environ["FASTDDS_DEFAULT_PROFILES_FILE"] = str(Path(__file__).with_name("mock-fastdds.xml"))
     repo = Path("/home/rosdev/ros2_ws")
     source = (repo / "crates/policy-runner/src/worker.rs").read_text()
     start = ast.literal_eval(re.search(r"START_POSE: Joints = (\[[^;]+\]);", source)[1])

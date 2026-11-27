@@ -56,8 +56,13 @@ native 640x360 JPEGs. The generic image checker still defaults to 640x480; the
 runner has an explicit `--camera-size WIDTHxHEIGHT` option, and the local Spark
 build and three-camera launchers select 640x360. Frames are not resized.
 
-Mock camera readers use Fast DDS UDP on loopback to avoid stale shared-memory
-transport state. Docker networking remains disabled for this container.
+Mock camera import/check processes and newly opened runner/RViz processes load
+`tools/mock-fastdds.xml`, which allows only UDP on loopback. They set
+`ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT` so Kilted's LOCALHOST override
+cannot add shared-memory transport after the XML profile is loaded. Merely
+setting `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` was ineffective with that override.
+Docker networking remains disabled; the XML also restricts the transport to
+127.0.0.1. Existing controller processes do not need to be restarted.
 
 ## Robot and camera viewer
 
@@ -120,3 +125,22 @@ action in 4.553 seconds, with no planner fallback. Three subsequent control
 requests took 18.4, 4.3 and 4.2 ms, below the runner's 100 ms control timeout.
 These API checks published no motion commands and are not
 a completed runner episode or a calibrated real-arm test.
+
+## Cargo and the isolated mock container
+
+The host scripts run the same `target/release/policy-runner` binary produced by
+Cargo. Build in the writable devcontainer (`relaxed_clarke`) with the ROS,
+Robotiq and Orbbec setup files sourced. The mock container mounts the checkout
+read-only and has no network access or Cargo registry cache; it runs that built
+binary. A bare `cargo run` there is not a supported build setup.
+
+The scripts also prepare the driver/camera relay and select mock domain 77 and
+the Qwen endpoint. `--task=bolt_to_tray` alone supplies only the task ID; the
+adapter adds its configured instruction and goal image.
+
+Transport regression validation: 12 independent fresh camera checks passed, then
+one reader received 1849 left, 1850 right and 1795 wrist frames over 60 seconds.
+Maximum observed inter-frame gap was 37 ms. The relay and the sustained reader
+had no Fast DDS shared-memory file handles; the container retained network mode
+`none`. The host launcher then opened the idle runner with all three camera
+statuses live. This is a bounded check, not a long-term reliability guarantee.

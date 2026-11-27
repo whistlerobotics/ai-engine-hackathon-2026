@@ -4,8 +4,8 @@ container=rc-ros-driver-sim
 if ! docker container inspect "$container" >/dev/null 2>&1; then
     docker run -d --name "$container" --network none --user 1000:1000 \
         --cap-drop ALL --security-opt no-new-privileges \
-        -e ROS_DOMAIN_ID=77 -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
-        -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+        -e ROS_DOMAIN_ID=77 -e ROS_AUTOMATIC_DISCOVERY_RANGE=SYSTEM_DEFAULT \
+        -e FASTDDS_DEFAULT_PROFILES_FILE=/home/rosdev/ros2_ws/tools/mock-fastdds.xml \
         -e ROS_HOME=/tmp/ros \
         -v "$HOME/ai-engine-hackathon-2026:/home/rosdev/ros2_ws:ro" \
         -w /home/rosdev/ros2_ws/robot --entrypoint bash whistle-hackathon:local -lc '
