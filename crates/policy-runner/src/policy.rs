@@ -330,11 +330,10 @@ mod http_tests {
                 readiness: Readiness::Ready
             }
         );
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../../docs/contract-fixtures/whistle-policy-v3.json"
+        let sample: Value = serde_json::from_str(include_str!(
+            "../../../docs/contract-fixtures/whistle-policy-v3-request.json"
         ))
         .unwrap();
-        let sample = &fixture["request"];
         let goals: Images = serde_json::from_value(sample["goal"].clone()).unwrap();
         let mut request = ActRequest {
             episode_id: "http-test",

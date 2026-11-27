@@ -41,8 +41,6 @@ Each element consumes one 50 ms action step, up to 1,200 steps. Cumulative
 5 seconds and no retries. Time waiting for a response does not consume steps.
 Mock runs have no manipulation success signal.
 
-The [shared fixture](docs/contract-fixtures/whistle-policy-v3.json) is identical to
-Reality Check's fixture. Whistle tests the shared request. The fixture's
-normalization and hold cases specify Reality Check's scoring behavior. The
-fixture images are synthetic. The deployed task pack contains
-the actual goal images for each supported run context.
+The [request fixture](docs/contract-fixtures/whistle-policy-v3-request.json)
+matches the request in Reality Check's fixture. Its six images are synthetic.
+The mock task pack provides the goal images used during episodes.

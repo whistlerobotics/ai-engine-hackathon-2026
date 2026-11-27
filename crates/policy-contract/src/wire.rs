@@ -302,11 +302,10 @@ mod tests {
     #[test]
     fn shared_request_fixture() {
         use base64::{Engine, engine::general_purpose::STANDARD};
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../../docs/contract-fixtures/whistle-policy-v3.json"
+        let sample: Value = serde_json::from_str(include_str!(
+            "../../../docs/contract-fixtures/whistle-policy-v3-request.json"
         ))
         .unwrap();
-        let sample = &fixture["request"];
         let episode = sample["episode_id"].as_str().unwrap();
         let step = sample["step"].as_u64().unwrap() as u32;
         let goal: Images = serde_json::from_value(sample["goal"].clone()).unwrap();
@@ -320,7 +319,7 @@ mod tests {
             goal: &goal,
             proprio: serde_json::from_value(sample["proprio"].clone()).unwrap(),
         };
-        assert_eq!(serde_json::to_value(&request).unwrap(), *sample);
+        assert_eq!(serde_json::to_value(&request).unwrap(), sample);
         for imgs in [&request.images, request.goal] {
             for image in [&imgs.wrist, &imgs.left, &imgs.right] {
                 crate::image::check_policy_jpeg(&STANDARD.decode(image).unwrap()).unwrap();
