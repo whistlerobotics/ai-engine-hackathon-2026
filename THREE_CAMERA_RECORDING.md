@@ -23,10 +23,20 @@ state, controller commands and feedback, speed scaling, robot status, TCP pose,
 and TF. Image messages retain their camera timestamps; capture does not imply
 hardware synchronization or calibrated camera-to-robot transforms.
 
-The existing `target/release/record` tool still writes single-camera demonstration
-JSON from `/camera/color/image_raw/compressed`. It does not record three cameras.
-The new recorder writes ROS bags in MCAP format, rather than changing that JSON
-schema. Use the new command to capture all three cameras during a run.
+The Rust demonstration recorder also captures all three cameras:
+
+```bash
+cargo run --release -p record -- --task bolt_to_tray
+```
+
+It records while the hand-guiding button is held and saves schema version 3 JSON
+under `recording/bolt_to_tray/ep_*.json`. Each step contains `images.wrist`,
+`images.left` and `images.right`, each a distinct native 640x360 JPEG encoded as
+base64, plus robot and gripper state and the gripper command. Normal recording
+requires all three cameras to remain fresh; `--permissive` substitutes black
+frames only for missing views. The JSON samples the latest view at each 20 Hz
+step. Use the MCAP command above for continuous full-rate streams, intrinsics,
+and the additional ROS topics.
 
 The current robot launch command, inside the sourced container from `robot/`, is:
 

@@ -1,5 +1,55 @@
 # Current Spark workspace
 
+## Previous policy runner on the forjoe checkout
+
+The schema v2 runner is available separately, without replacing forjoe's schema v3
+runner or requiring a task pack:
+
+```bash
+cd /home/rosdev/ros2_ws
+ROS_DOMAIN_ID=42 mise run three-camera-policy
+```
+
+This builds the previous runner at commit `d6f0ace748600d2a94dc09de5b7711a6d127018a`
+under `target/legacy-policy-runner/` and uses the existing Qwen three-view adapter
+at `http://127.0.0.1:18081`. The adapter supplies the saved instruction and wrist
+goal for `bolt_to_tray`; it uses all three live camera views. On the Spark host,
+start the existing services with `docker start rc-qwen-visionik rc-three-view-proxy`
+if they are stopped. Qwen must finish loading before an episode can start.
+
+For the previous runner's raw arguments:
+
+```bash
+ROS_DOMAIN_ID=42 mise run policy-runner-legacy -- \
+  --task bolt_to_tray --policy http://127.0.0.1:18081 \
+  --camera-topic /right_camera/color/image_raw/compressed --camera-size 640x360
+```
+
+The original `mise run policy-runner` still runs forjoe's schema v3 runner.
+Physical gripper communication and camera-to-base calibration remain separate
+commissioning requirements. These launchers do not start episodes automatically.
+
+## Rust recording with three cameras
+
+```bash
+cd /home/rosdev/ros2_ws
+ROS_DOMAIN_ID=42 cargo run --release -p record -- --task bolt_to_tray
+```
+
+Holding the hand-guiding button records; releasing saves to
+`recording/bolt_to_tray/ep_*.json`. Each step now contains distinct
+`images.wrist`, `images.left` and `images.right` base64 JPEGs at their native
+640x360 resolution, alongside arm state, gripper feedback and gripper command.
+The recording format version is 3. `mise run extract-video` extracts the wrist
+view, retaining support for `images.top` in older recordings.
+
+All three cameras and gripper feedback must be fresh for normal recording.
+`--permissive` replaces only missing camera views with 640x360 black JPEGs and
+missing gripper feedback with null; `steps_without_image` counts steps with any
+missing view. Camera sampling uses the latest received frame per view at 20 Hz;
+it does not claim hardware synchronization. The MCAP recorder remains available
+for full camera streams and camera intrinsics.
+
 This private repository preserves the Whistle Robotics history and the current Spark changes.
 The active checkout is `/home/joe-spark-2/ai-engine-hackathon-2026`.
 
@@ -147,9 +197,8 @@ python3 tools/demo-tui.py --observe-replay
    feedback confirms the pose.
 2. **C** arms Whistle's existing Rust recorder on domain 42. It waits for
    a fresh hold of the physical hand-guiding button and saves the Human
-   take when the button is released. The default source is the named
-   right camera at 640×360. Use `--camera-topic /camera/color/image_raw/compressed`
-   for the original 640×480 camera.
+   take when the button is released. The Rust recorder requires fresh wrist,
+   left and right camera images at 640×360.
 3. **R** loads the Human take into Whistle's replay policy and prepares a
    second Rust recorder and the three-camera bag. The cell operator homes
    and starts replay using the existing controls and the displayed policy

@@ -12,7 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const DEFAULT_CAMERA_TOPIC: &str = "/camera/color/image_raw/compressed";
+pub const CAMERA_TOPICS: [&str; 3] = [
+    "/wrist_camera/color/image_raw/compressed",
+    "/left_camera/color/image_raw/compressed",
+    "/right_camera/color/image_raw/compressed",
+];
 pub const ACTIVE_TOPIC: &str = "/hand_guiding/active";
 const FINGER_COMMAND_TOPIC: &str = "/gripper/finger_position_controller/commands";
 const STALE_AFTER: Duration = Duration::from_millis(100);
@@ -57,8 +61,7 @@ type Latest<T> = Arc<Mutex<Option<Received<T>>>>;
 pub struct Ros {
     arm: Latest<ArmState>,
     finger: Latest<f64>,
-    camera: Latest<Vec<u8>>,
-    camera_topic: String,
+    cameras: [Latest<Vec<u8>>; 3],
     hand_guiding: Latest<HandGuiding>,
     finger_command: Latest<f64>,
     _subscriptions: Subscriptions,
@@ -69,13 +72,13 @@ pub struct Ros {
 struct Subscriptions {
     _arm: Subscription<JointState>,
     _finger: Subscription<JointState>,
-    _camera: Subscription<CompressedImage>,
+    _cameras: Vec<Subscription<CompressedImage>>,
     _hand_guiding: Subscription<Bool>,
     _finger_command: Subscription<Float64MultiArray>,
 }
 
 impl Ros {
-    pub fn new(camera_topic: &str) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let context = Context::default_from_env()?;
         let mut executor = context.create_basic_executor();
         let node = executor.create_node("record")?;
@@ -102,13 +105,18 @@ impl Ros {
             }
         })?;
 
-        let camera = Latest::default();
+        let cameras = std::array::from_fn(|_| Latest::default());
         // The camera driver publishes best-effort, which a reliable subscription wouldn't match.
-        let camera_subscription =
-            node.create_subscription(camera_topic.best_effort().keep_last(1), {
-                let camera = Arc::clone(&camera);
-                move |msg: CompressedImage| *camera.lock() = Some(Received::new(msg.data))
-            })?;
+        let camera_subscriptions = CAMERA_TOPICS
+            .iter()
+            .zip(&cameras)
+            .map(|(topic, camera)| {
+                node.create_subscription(topic.best_effort().keep_last(1), {
+                    let camera = Arc::clone(camera);
+                    move |msg: CompressedImage| *camera.lock() = Some(Received::new(msg.data))
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let hand_guiding = Latest::default();
         let hand_guiding_subscription = node.create_subscription(ACTIVE_TOPIC, {
@@ -142,14 +150,13 @@ impl Ros {
         Ok(Self {
             arm,
             finger,
-            camera,
-            camera_topic: camera_topic.to_owned(),
+            cameras,
             hand_guiding,
             finger_command,
             _subscriptions: Subscriptions {
                 _arm: arm_subscription,
                 _finger: finger_subscription,
-                _camera: camera_subscription,
+                _cameras: camera_subscriptions,
                 _hand_guiding: hand_guiding_subscription,
                 _finger_command: finger_command_subscription,
             },
@@ -167,12 +174,8 @@ impl Ros {
         self.finger.lock().clone()
     }
 
-    pub fn camera_topic(&self) -> &str {
-        &self.camera_topic
-    }
-
-    pub fn camera(&self) -> Option<Received<Vec<u8>>> {
-        self.camera.lock().clone()
+    pub fn camera(&self, index: usize) -> Option<Received<Vec<u8>>> {
+        self.cameras[index].lock().clone()
     }
 
     /// None once hand-guiding has gone quiet: it is not running, or has hung.

@@ -117,7 +117,9 @@ fn command(input: &Receiver<Result<Command>>, signal: &AtomicUsize) -> Result<Op
     match input.try_recv() {
         Ok(command) => command.map(Some),
         Err(TryRecvError::Empty) => Ok(None),
-        Err(TryRecvError::Disconnected) => Err(eyre!("Policy capture control closed before finish")),
+        Err(TryRecvError::Disconnected) => {
+            Err(eyre!("Policy capture control closed before finish"))
+        }
     }
 }
 
@@ -129,7 +131,7 @@ fn ensure_clear(recorder: &Recorder, now: Instant) -> Result<()> {
 }
 
 fn sample(recorder: &Recorder, now: Instant) -> Result<Observation, Stale> {
-    observe(&recorder.ros, now, false, recorder.args.camera_size)
+    observe(&recorder.ros, now, false)
 }
 
 fn fresh_finger_command(recorder: &Recorder, now: Instant) -> Option<f64> {

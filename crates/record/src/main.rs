@@ -5,7 +5,7 @@ mod ros;
 
 use crate::{
     episode::{End, Episode, observe},
-    ros::{ACTIVE_TOPIC, DEFAULT_CAMERA_TOPIC, HandGuiding, Ros},
+    ros::{ACTIVE_TOPIC, CAMERA_TOPICS, HandGuiding, Ros},
 };
 use clap::Parser;
 use color_eyre::{Result, eyre::eyre};
@@ -25,7 +25,7 @@ use std::{
 const COMMAND_WAIT: Duration = Duration::from_secs(1);
 /// How long hand-guiding may stay silent at startup before saying it is not running.
 const STARTUP_GRACE: Duration = Duration::from_secs(1);
-const DEFAULT_CAMERA_SIZE: (usize, usize) = (640, 480);
+const DEFAULT_CAMERA_SIZE: (usize, usize) = (640, 360);
 
 /// Records demonstrations, one JSON file per episode. An episode runs for as long as
 /// hand-guiding has the arm in freedrive, which is while its button is held.
@@ -38,10 +38,10 @@ struct Args {
     #[arg(long, default_value = "recording")]
     out_dir: PathBuf,
     /// The compressed ROS image topic to record.
-    #[arg(long, default_value = DEFAULT_CAMERA_TOPIC)]
+    #[arg(long, default_value = CAMERA_TOPICS[2])]
     camera_topic: String,
     /// Expected frame dimensions (640x480 or 640x360).
-    #[arg(long, default_value = "640x480", value_parser = camera_size)]
+    #[arg(long, default_value = "640x360", value_parser = camera_size)]
     camera_size: (usize, usize),
     /// Exit after saving one episode.
     #[arg(long)]
@@ -89,8 +89,10 @@ struct Recorder {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    if args.permissive && args.camera_size != DEFAULT_CAMERA_SIZE {
-        return Err(eyre!("--permissive requires 640x480 for the fallback frame"));
+    if args.camera_topic != CAMERA_TOPICS[2] || args.camera_size != DEFAULT_CAMERA_SIZE {
+        return Err(eyre!(
+            "three-camera recording requires the right camera topic and 640x360; all three named cameras are recorded"
+        ));
     }
     let max_steps =
         usize::try_from(Duration::from_secs(args.max_duration).as_millis() / STEP.as_millis())?;
@@ -107,7 +109,7 @@ fn main() -> Result<()> {
         );
     }
     let mut recorder = Recorder {
-        ros: Ros::new(&args.camera_topic)?,
+        ros: Ros::new()?,
         args,
         max_steps,
         saved: 0,
@@ -123,7 +125,9 @@ fn main() -> Result<()> {
         let now = Instant::now();
         if let Some(name) = signal_name(signal.load(Ordering::Relaxed)) {
             if recorder.args.once {
-                return Err(eyre!("Recording cancelled by {name} before an episode was saved"));
+                return Err(eyre!(
+                    "Recording cancelled by {name} before an episode was saved"
+                ));
             }
             if let State::Recording(recording) = state {
                 recorder.finish(&recording.episode, &End::Signal(name))?;
@@ -204,12 +208,7 @@ impl Recorder {
                 reported: reported || now - since > COMMAND_WAIT,
             };
         };
-        match observe(
-            &self.ros,
-            now,
-            self.args.permissive,
-            self.args.camera_size,
-        ) {
+        match observe(&self.ros, now, self.args.permissive) {
             Ok(observation) => {
                 let mut episode = Episode::new(&self.args.task, now);
                 episode.add_step(now, observation, command.value);
@@ -241,12 +240,7 @@ impl Recorder {
         if now < recording.next_step_at {
             return None;
         }
-        let observation = match observe(
-            &self.ros,
-            now,
-            self.args.permissive,
-            self.args.camera_size,
-        ) {
+        let observation = match observe(&self.ros, now, self.args.permissive) {
             Ok(observation) => observation,
             Err(stale) => return Some(End::Stale(stale)),
         };
@@ -277,7 +271,7 @@ impl Recorder {
                 let mut details = vec![format!("{:.2} s", duration(steps).as_secs_f64())];
                 if episode.steps_without_image > 0 {
                     details.push(format!(
-                        "{} without a camera frame",
+                        "{} with at least one missing camera frame",
                         episode.steps_without_image
                     ));
                 }
@@ -318,7 +312,7 @@ fn signal_name(number: usize) -> Option<&'static str> {
 
 fn camera_size(value: &str) -> Result<(usize, usize)> {
     match value {
-        "640x480" => Ok(DEFAULT_CAMERA_SIZE),
+        "640x480" => Ok((640, 480)),
         "640x360" => Ok((640, 360)),
         _ => Err(eyre!("expected 640x480 or 640x360")),
     }
@@ -340,7 +334,7 @@ mod tests {
     #[test]
     fn capture_options_are_opt_in() {
         let args = Args::try_parse_from(["record", "--task", "example"]).unwrap();
-        assert_eq!(args.camera_topic, DEFAULT_CAMERA_TOPIC);
+        assert_eq!(args.camera_topic, CAMERA_TOPICS[2]);
         assert_eq!(args.camera_size, DEFAULT_CAMERA_SIZE);
         assert!(!args.once);
         assert!(!args.policy_take);

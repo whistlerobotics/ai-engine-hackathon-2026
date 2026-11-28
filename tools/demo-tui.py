@@ -950,7 +950,9 @@ def main():
     if args.task not in args.task_choices:
         parser.error(f"Task {args.task!r} is not in the selected manifest.")
     if args.camera_size is None:
-        args.camera_size = "640x480" if args.camera_topic.startswith("/camera/") else "640x360"
+        args.camera_size = "640x360"
+    if args.camera_topic != "/right_camera/color/image_raw/compressed" or args.camera_size != "640x360":
+        parser.error("Three-camera recording uses the named wrist, left and right 640x360 cameras.")
     if args.out_dir is None:
         args.out_dir = ROOT / "recording" / "demo-preview" if args.preview else ROOT / "recording"
 

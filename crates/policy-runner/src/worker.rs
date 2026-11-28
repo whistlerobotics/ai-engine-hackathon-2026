@@ -16,8 +16,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Captured from the arm on 2026-11-25.
-pub const START_POSE: Joints = [-3.1477, -1.6507, -2.4943, -0.6170, 1.4267, -4.5194];
+/// Captured 2026-11-28 at 07:14 UTC; J6 adjusted by +360 degrees.
+pub const START_POSE: Joints = [
+    -2.932028,
+    -1.278959,
+    -2.076159,
+    -1.365526,
+    1.570474,
+    0.615173307,
+];
 pub const TOLERANCE: f64 = 0.02;
 const START_SPEED: f64 = std::f64::consts::PI / 10.0;
 const MIN_START_MOVE: Duration = Duration::from_secs(1);

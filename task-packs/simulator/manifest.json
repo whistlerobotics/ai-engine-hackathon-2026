@@ -1,14 +1,14 @@
 {
   "schema_version": 3,
-  "revision": "sim-v3-ebcbfa49bddc1987",
+  "revision": "sim-v3-ebcbfa49bddc1987-home-20261128T071405Z-j6-plus360-20261128T080225Z",
   "goal_source": "Rendered simulator goal views for the two public tasks. Use as placeholders until real-cell photos are available.",
   "start_pose_rad": [
-    -3.1477,
-    -1.6507,
-    -2.4943,
-    -0.617,
-    1.4267,
-    -4.5194
+    -2.932028,
+    -1.278959,
+    -2.076159,
+    -1.365526,
+    1.570474,
+    0.615173307
   ],
   "tasks": [
     {

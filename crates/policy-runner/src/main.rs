@@ -43,17 +43,25 @@ const POLICY_POLL_PERIOD: Duration = Duration::from_secs(1);
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// Runs episodes of a policy over the `/act` contract `v0` on the `UR12e` and its gripper.
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 struct Args {
     /// The policy server's base URL.
-    #[arg(long, env = "WHISTLE_POLICY_URL", required_unless_present = "operator_home_only")]
+    #[arg(
+        long,
+        env = "WHISTLE_POLICY_URL",
+        required_unless_present = "operator_home_only"
+    )]
     policy: Option<String>,
     /// The `task_id` sent to the policy; `t` changes it between episodes.
     #[arg(long, required_unless_present = "operator_home_only")]
     task: Option<String>,
     #[arg(long, env = "WHISTLE_MODE", value_enum, default_value = "real")]
     mode: Mode,
-    #[arg(long, env = "WHISTLE_TASK_PACK", required_unless_present = "operator_home_only")]
+    #[arg(
+        long,
+        env = "WHISTLE_TASK_PACK",
+        required_unless_present = "operator_home_only"
+    )]
     task_pack: Option<PathBuf>,
     #[arg(
         long,
@@ -340,14 +348,15 @@ mod tests {
         assert_eq!(args.mock_replay_steps, Some(12));
         assert_eq!(
             replay::start_pose(args.mock_replay_start).unwrap(),
-            worker::START_POSE
+            [-3.1477, -1.6507, -2.4943, -0.6170, 1.4267, -4.5194]
         );
     }
 
     #[test]
     fn operator_home_accepts_no_policy_or_task() {
-        let args = Args::try_parse_from(["policy-runner", "--mode", "real", "--operator-home-only"])
-            .unwrap();
+        let args =
+            Args::try_parse_from(["policy-runner", "--mode", "real", "--operator-home-only"])
+                .unwrap();
         assert!(args.operator_home_only);
     }
 

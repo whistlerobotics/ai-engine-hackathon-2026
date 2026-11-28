@@ -26,7 +26,7 @@ use std::{
 };
 
 pub const ROLES: [&str; 3] = ["wrist", "left", "right"];
-const MAX_VIEW_SKEW: Duration = Duration::from_millis(60);
+const MAX_VIEW_SKEW: Duration = Duration::from_millis(100);
 const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scaling";
 const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";

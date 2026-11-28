@@ -67,8 +67,11 @@ mise run record -- --task <task_id>
 Each press of the hand-guiding button records an episode; releasing it saves the episode to
 `recording/<task_id>/<episode_id>.json`. An episode also ends, and is saved, after `--max-duration`
 seconds (at most and by default 60), or as soon as the arm, gripper or camera reading goes stale.
+Every step saves the wrist, left and right cameras as distinct 640x360 JPEGs under
+`images.wrist`, `images.left` and `images.right`, together with robot state and the gripper
+command. New recording files use schema version 3.
 With `--permissive`, a stale camera frame is recorded as a black frame and a stale gripper reading
 as `null` instead; a stale arm still ends the episode. `ended_by` in each file says why it ended.
 
-`mise run extract-video recording/<task_id>/<episode_id>.json …` turns each episode's camera frames
+`mise run extract-video recording/<task_id>/<episode_id>.json …` turns each episode's wrist frames
 into `recording/<task_id>/<episode_id>.mp4`.

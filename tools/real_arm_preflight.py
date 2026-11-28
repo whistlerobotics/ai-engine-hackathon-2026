@@ -10,10 +10,13 @@ TIMEOUT = 10
 ROLES = ("wrist", "left", "right")
 
 
-def sample(topic: str, message_type: str, field: str) -> tuple[str, ...]:
+def sample(topic: str, message_type: str, field: str, *, latched: bool = False) -> tuple[str, ...]:
+    qos = ("--qos-reliability", "reliable", "--qos-durability", "transient_local") if latched else (
+        "--qos-reliability", "best_effort",
+    )
     return (
         "topic", "echo", topic, message_type, "--once",
-        "--qos-reliability", "best_effort", "--field", field,
+        *qos, "--field", field,
     )
 
 
@@ -56,7 +59,7 @@ def main() -> int:
         ("gripper feedback", sample(
             "/gripper/joint_states", "sensor_msgs/msg/JointState", "header"), "stamp:"),
         ("External Control program running", sample(
-            "/io_and_status_controller/robot_program_running", "std_msgs/msg/Bool", "data"), "true"),
+            "/io_and_status_controller/robot_program_running", "std_msgs/msg/Bool", "data", latched=True), "true"),
         ("active arm trajectory controller",
          ("control", "list_controllers", "-c", "/controller_manager"),
          "joint_trajectory_controller"),

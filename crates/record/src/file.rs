@@ -1,7 +1,7 @@
 use crate::episode::{Episode, Image, RecordedProprio};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use color_eyre::{Result, eyre::eyre};
-use policy_contract::{ARM_JOINTS, STEP, image::BLACK_JPEG};
+use policy_contract::{ARM_JOINTS, STEP, wire::Images};
 use serde::Serialize;
 use std::{
     fs::{self, File},
@@ -21,10 +21,7 @@ struct Header<'a> {
     joint_names: [&'a str; 6],
 }
 
-#[derive(Serialize)]
-struct Images {
-    top: String,
-}
+const BLACK_JPEG: &[u8] = include_bytes!("../assets/black-640x360.jpg");
 
 #[derive(Serialize)]
 struct StepLine<'a> {
@@ -50,7 +47,7 @@ pub fn save(episode: &Episode, out_dir: &Path, ended_by: &str) -> Result<PathBuf
     let header = Header {
         episode_id: &episode.id,
         task_id: &episode.task_id,
-        schema_version: 2,
+        schema_version: 3,
         step_s: STEP.as_secs_f64(),
         started_at: &episode.started_at,
         ended_by,
@@ -68,19 +65,19 @@ pub fn save(episode: &Episode, out_dir: &Path, ended_by: &str) -> Result<PathBuf
         if index > 0 {
             writer.write_all(b",\n")?;
         }
-        let jpeg = match &step.image {
-            Image::Camera(jpeg) => jpeg.as_slice(),
-            Image::Black => BLACK_JPEG,
-        };
+        let [wrist, left, right] = step.images.each_ref().map(|image| {
+            BASE64.encode(match image {
+                Image::Camera(jpeg) => jpeg.as_slice(),
+                Image::Black => BLACK_JPEG,
+            })
+        });
         writer.write_all(b"    ")?;
         serde_json::to_writer(
             &mut writer,
             &StepLine {
                 step: index,
                 t: step.t,
-                images: Images {
-                    top: BASE64.encode(jpeg),
-                },
+                images: Images { wrist, left, right },
                 proprio: &step.proprio,
                 gripper_command: step.gripper_command,
             },
@@ -102,7 +99,7 @@ mod tests {
     use serde_json::Value;
     use std::time::{Duration, Instant};
 
-    fn step(image: Image) -> Observation {
+    fn step(image: &Image) -> Observation {
         Observation {
             proprio: RecordedProprio {
                 joint_pos: [0.0; 6],
@@ -111,7 +108,7 @@ mod tests {
                 ee_pos: [0.0; 3],
                 ee_quat: [1.0, 0.0, 0.0, 0.0],
             },
-            image,
+            images: std::array::from_fn(|_| image.clone()),
         }
     }
 
@@ -119,8 +116,8 @@ mod tests {
     fn layout() -> Result<()> {
         let start = Instant::now();
         let mut episode = Episode::new("task", start);
-        episode.add_step(start, step(Image::Black), 0.0);
-        episode.add_step(start + STEP, step(Image::Camera(BLACK_JPEG.to_vec())), 0.0);
+        episode.add_step(start, step(&Image::Black), 0.0);
+        episode.add_step(start + STEP, step(&Image::Camera(BLACK_JPEG.to_vec())), 0.0);
         let out_dir = std::env::temp_dir().join(format!("record-test-{}", std::process::id()));
 
         let path = save(&episode, &out_dir, "release")?;
@@ -156,7 +153,12 @@ mod tests {
         assert_eq!(json["steps_without_image"], 1);
         assert_eq!(json["steps"][1]["t"], 0.05);
         assert_eq!(json["steps"][0]["proprio"]["gripper"], Value::Null);
-        assert_eq!(json["steps"][0]["images"]["top"], BASE64.encode(BLACK_JPEG));
+        assert_eq!(json["schema_version"], 3);
+        let images = json["steps"][0]["images"].as_object().unwrap();
+        assert_eq!(images.len(), 3);
+        for role in ["wrist", "left", "right"] {
+            assert_eq!(images[role], BASE64.encode(BLACK_JPEG));
+        }
         assert_eq!(json["steps"][0]["gripper_command"], 1.0);
         Ok(())
     }
@@ -167,10 +169,36 @@ mod tests {
         let mut episode = Episode::new("task", start);
         episode.add_step(
             start + Duration::from_micros(50_049),
-            step(Image::Black),
+            step(&Image::Black),
             0.0,
         );
         let Step { t, .. } = episode.steps[0].clone();
         assert!((t - 0.05).abs() < 1e-12, "{t}");
+    }
+
+    #[test]
+    fn saves_distinct_named_camera_frames() -> Result<()> {
+        let frames: [&[u8]; 3] = [
+            include_bytes!("../../../task-packs/simulator/bolt_to_tray/sim-0/wrist.jpg"),
+            include_bytes!("../../../task-packs/simulator/bolt_to_tray/sim-0/left.jpg"),
+            include_bytes!("../../../task-packs/simulator/bolt_to_tray/sim-0/right.jpg"),
+        ];
+        let start = Instant::now();
+        let mut episode = Episode::new("three_camera_test", start);
+        let mut observation = step(&Image::Black);
+        observation.images = frames.map(|jpeg| Image::Camera(jpeg.to_vec()));
+        episode.add_step(start, observation, 0.0);
+        let out_dir =
+            std::env::temp_dir().join(format!("record-three-camera-test-{}", std::process::id()));
+        let path = save(&episode, &out_dir, "release")?;
+        let json: Value = serde_json::from_reader(File::open(path)?)?;
+        fs::remove_dir_all(out_dir)?;
+        for (role, expected) in ["wrist", "left", "right"].into_iter().zip(frames) {
+            let actual = BASE64.decode(json["steps"][0]["images"][role].as_str().unwrap())?;
+            assert_eq!(actual, expected);
+            policy_contract::image::check_policy_jpeg(&actual).unwrap();
+        }
+        assert_eq!(json["steps_without_image"], 0);
+        Ok(())
     }
 }

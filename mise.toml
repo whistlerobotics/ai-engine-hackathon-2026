@@ -29,9 +29,17 @@ run = "python3 test-policy.py"
 description = "Whistle's schema v3 policy runner; takes --task <task_id> and --policy <url>"
 run = "cargo run --release -p policy-runner --"
 
+[tasks.policy-runner-legacy]
+description = "Previous schema v2 runner; takes --task and --policy, without a task pack"
+run = "bash tools/run-legacy-policy-runner.sh"
+
+[tasks.three-camera-policy]
+description = "Previous runner with Qwen's three-view adapter; optional positional task ID"
+run = "bash tools/run-three-camera-policy.sh"
+
 [tasks.record]
-description = "Record demonstrations to recording/ while the hand-guiding button is held; takes --task <task_id>, and `mise run record -- --help` lists the rest"
-run = "cargo run --release -p record --"
+description = "Record wrist, left and right cameras and robot state to recording/ while hand-guiding is held; takes --task <task_id>"
+run = "bash tools/run-record.sh"
 
 [tasks.demo-tui]
 description = "Stage, review, and save paired demos; pass --preview to try the interface without ROS"
@@ -52,7 +60,7 @@ usage = 'arg "<episode>" var=#true help="An episode saved by `mise run record`"'
 dir = "{{cwd}}"
 run = '''
 for episode in $usage_episode; do
-  jq -r '.steps[].images.top' "$episode" | while read -r frame; do printf %s "$frame" | base64 -d; done \
+  jq -r '.steps[] | .images.wrist // .images.top' "$episode" | while read -r frame; do printf %s "$frame" | base64 -d; done \
     | ffmpeg -loglevel error -y -f image2pipe -framerate "1/$(jq .step_s "$episode")" -c:v mjpeg -i - \
       -c:v libx264 -pix_fmt yuv420p "${episode%.json}.mp4"
   echo "${episode%.json}.mp4"
