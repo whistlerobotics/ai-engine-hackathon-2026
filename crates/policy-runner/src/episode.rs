@@ -111,6 +111,7 @@ pub struct Episode<'a> {
     q_cmd: Joints,
     commanded: bool,
     counts: Counts,
+    step_limit: u32,
 }
 
 impl<'a> Episode<'a> {
@@ -122,6 +123,7 @@ impl<'a> Episode<'a> {
         task: &'a Task,
         cancel: &'a AtomicBool,
         progress: &'a Mutex<Option<Progress>>,
+        step_limit: u32,
     ) -> Report {
         *progress.lock() = Some(Progress::new());
         let mut episode = Self {
@@ -135,6 +137,7 @@ impl<'a> Episode<'a> {
             q_cmd: [0.0; 6],
             commanded: false,
             counts: Counts::default(),
+            step_limit,
         };
         let outcome = match episode.step_loop() {
             Ok(()) => Outcome::Completed,
@@ -159,14 +162,14 @@ impl<'a> Episode<'a> {
     fn step_loop(&mut self) -> Result<(), Stop> {
         self.q_cmd = self.measured_arm()?;
         let mut next_start = Instant::now() + STEP;
-        while self.counts.steps < STEPS {
+        while self.counts.steps < self.step_limit {
             let actions = self.act()?;
             let now = Instant::now();
             if now > next_start {
                 self.counts.late += 1;
             }
             let start = now.max(next_start);
-            let remaining = (STEPS - self.counts.steps) as usize;
+            let remaining = (self.step_limit - self.counts.steps) as usize;
             let actions = &actions[..actions.len().min(remaining)];
             let mut target = self.q_cmd;
             let mut targets = Vec::with_capacity(actions.len());

@@ -1,9 +1,9 @@
 use crate::{
     app::{Command, Phase, Shared},
-    episode::Episode,
+    episode::{Episode, STEPS},
     policy::{Health, Policy, Readiness},
     ros::{Mode, Received, Ros},
-    task::TaskPack,
+    task::{Task, TaskPack},
 };
 use color_eyre::{
     Result,
@@ -34,39 +34,24 @@ pub fn serve(
     for command in commands {
         let phase = match command {
             Command::MoveToStart => {
-                if move_to_start(ros, shared)? {
+                if move_to_start(ros, shared, &START_POSE)? {
                     Phase::AtStart
                 } else {
                     Phase::Idle
                 }
             }
             Command::RunEpisode { task_id } => {
-                let setup = (|| -> Result<_> {
-                    let task = pack.select(&task_id)?;
-                    let status = policy.status();
-                    ensure!(
-                        status.health == Health::Up && status.readiness == Readiness::Ready,
-                        "policy health {}, readiness {}",
-                        status.health,
-                        status.readiness
-                    );
-                    if let Some(issue) = ros.controller_issue().or_else(|| ros.gripper_issue()) {
-                        return Err(eyre!("{issue}"));
-                    }
-                    ensure!(
-                        ros.arm()
-                            .filter(Received::is_fresh)
-                            .is_some_and(|a| distance_to_start(&a.value.position) <= TOLERANCE),
-                        "arm moved away from the selected start pose"
-                    );
-                    ensure!(!shared.cancel.load(Ordering::Relaxed), "operator cancelled");
-                    ros.check_cameras()?;
-                    Ok(task)
-                })();
+                let setup = prepare_episode(ros, policy, shared, pack, &task_id, &START_POSE);
                 match setup {
                     Ok(task) => {
-                        let report =
-                            Episode::run(ros, policy, &task, &shared.cancel, &shared.progress);
+                        let report = Episode::run(
+                            ros,
+                            policy,
+                            &task,
+                            &shared.cancel,
+                            &shared.progress,
+                            STEPS,
+                        );
                         let line = report.to_string();
                         shared.log.push(line.clone());
                         shared.reports.lock().push(line);
@@ -85,19 +70,61 @@ pub fn serve(
     Ok(())
 }
 
+pub fn prepare_episode(
+    ros: &Ros,
+    policy: &Policy,
+    shared: &Shared,
+    pack: &TaskPack,
+    task_id: &str,
+    start_pose: &Joints,
+) -> Result<Task> {
+    let task = pack.select(task_id)?;
+    let status = policy.status();
+    ensure!(
+        status.health == Health::Up && status.readiness == Readiness::Ready,
+        "policy health {}, readiness {}",
+        status.health,
+        status.readiness
+    );
+    if let Some(issue) = ros.controller_issue().or_else(|| ros.gripper_issue()) {
+        return Err(eyre!("{issue}"));
+    }
+    ensure!(
+        ros.arm()
+            .filter(Received::is_fresh)
+            .is_some_and(|arm| distance_to_pose(&arm.value.position, start_pose) <= TOLERANCE),
+        "arm moved away from the selected start pose"
+    );
+    ensure!(!shared.cancel.load(Ordering::Relaxed), "operator cancelled");
+    ros.check_cameras()?;
+    Ok(task)
+}
+
 pub fn distance_to_start(position: &Joints) -> f64 {
+    distance_to_pose(position, &START_POSE)
+}
+
+fn distance_to_pose(position: &Joints, target: &Joints) -> f64 {
     position
         .iter()
-        .zip(START_POSE)
-        .map(|(q, s)| (q - s).abs())
+        .zip(target)
+        .map(|(q, s)| {
+            if q.is_finite() {
+                (q - s).abs()
+            } else {
+                f64::INFINITY
+            }
+        })
         .fold(0.0, f64::max)
 }
 
-fn start_move(from: &Joints) -> Duration {
-    Duration::from_secs_f64(distance_to_start(from) / START_SPEED).max(MIN_START_MOVE)
+fn start_move(from: &Joints, target: &Joints) -> Result<Duration> {
+    let duration = Duration::try_from_secs_f64(distance_to_pose(from, target) / START_SPEED)
+        .map_err(|_| eyre!("invalid measured joint positions"))?;
+    Ok(duration.max(MIN_START_MOVE))
 }
 
-fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
+pub fn move_to_start(ros: &Ros, shared: &Shared, target: &Joints) -> Result<bool> {
     if let Some(issue) = ros.controller_issue() {
         return Err(eyre!("{issue}"));
     }
@@ -105,10 +132,10 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
         .arm()
         .filter(Received::is_fresh)
         .ok_or_else(|| eyre!("missing fresh arm state"))?;
-    let duration = start_move(&arm.value.position);
+    let duration = start_move(&arm.value.position, target)?;
     ensure!(!shared.cancel.load(Ordering::Relaxed), "operator cancelled");
     let sent = Instant::now();
-    ros.send_trajectory(&[START_POSE], duration)?;
+    ros.send_trajectory(std::slice::from_ref(target), duration)?;
     shared.log.push(format!(
         "Moving to the start pose over {:.1} s.",
         duration.as_secs_f64()
@@ -125,11 +152,11 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
             thread::sleep(POLL);
             continue;
         } else if measured.at > sent
-            && distance_to_start(&measured.value.position) <= TOLERANCE
+            && distance_to_pose(&measured.value.position, target) <= TOLERANCE
             && (ros.mode() == Mode::Real
-                || ros
-                    .reference()
-                    .is_some_and(|r| r.at > sent && distance_to_start(&r.value) <= TOLERANCE))
+                || ros.reference().is_some_and(|r| {
+                    r.at > sent && distance_to_pose(&r.value, target) <= TOLERANCE
+                }))
         {
             shared.log.push("At the start pose.");
             return Ok(true);
@@ -162,6 +189,6 @@ mod tests {
     #[test_case(START_POSE => MIN_START_MOVE; "already there")]
     #[test_case(offset(5, -2.0 * PI) => Duration::from_secs(20); "full turn backwards")]
     fn start_move_duration(from: Joints) -> Duration {
-        start_move(&from)
+        start_move(&from, &START_POSE).unwrap()
     }
 }

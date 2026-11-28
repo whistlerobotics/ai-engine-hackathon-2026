@@ -33,6 +33,10 @@ run = "cargo run --release -p policy-runner --"
 description = "Record demonstrations to recording/ while the hand-guiding button is held; takes --task <task_id>, and `mise run record -- --help` lists the rest"
 run = "cargo run --release -p record --"
 
+[tasks.demo-tui]
+description = "Stage, review, and save paired demos; pass --preview to try the interface without ROS"
+run = "python3 tools/demo-tui.py"
+
 [tasks."python:sync"]
 description = "Install the Python dev tools into .venv"
 run = "uv sync --locked"

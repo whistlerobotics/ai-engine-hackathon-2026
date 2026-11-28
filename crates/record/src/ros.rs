@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CAMERA_TOPIC: &str = "/camera/color/image_raw/compressed";
+pub const DEFAULT_CAMERA_TOPIC: &str = "/camera/color/image_raw/compressed";
 pub const ACTIVE_TOPIC: &str = "/hand_guiding/active";
 const FINGER_COMMAND_TOPIC: &str = "/gripper/finger_position_controller/commands";
 const STALE_AFTER: Duration = Duration::from_millis(100);
@@ -58,6 +58,7 @@ pub struct Ros {
     arm: Latest<ArmState>,
     finger: Latest<f64>,
     camera: Latest<Vec<u8>>,
+    camera_topic: String,
     hand_guiding: Latest<HandGuiding>,
     finger_command: Latest<f64>,
     _subscriptions: Subscriptions,
@@ -74,7 +75,7 @@ struct Subscriptions {
 }
 
 impl Ros {
-    pub fn new() -> Result<Self> {
+    pub fn new(camera_topic: &str) -> Result<Self> {
         let context = Context::default_from_env()?;
         let mut executor = context.create_basic_executor();
         let node = executor.create_node("record")?;
@@ -104,7 +105,7 @@ impl Ros {
         let camera = Latest::default();
         // The camera driver publishes best-effort, which a reliable subscription wouldn't match.
         let camera_subscription =
-            node.create_subscription(CAMERA_TOPIC.best_effort().keep_last(1), {
+            node.create_subscription(camera_topic.best_effort().keep_last(1), {
                 let camera = Arc::clone(&camera);
                 move |msg: CompressedImage| *camera.lock() = Some(Received::new(msg.data))
             })?;
@@ -142,6 +143,7 @@ impl Ros {
             arm,
             finger,
             camera,
+            camera_topic: camera_topic.to_owned(),
             hand_guiding,
             finger_command,
             _subscriptions: Subscriptions {
@@ -163,6 +165,10 @@ impl Ros {
     /// The finger joint's angle.
     pub fn finger(&self) -> Option<Received<f64>> {
         self.finger.lock().clone()
+    }
+
+    pub fn camera_topic(&self) -> &str {
+        &self.camera_topic
     }
 
     pub fn camera(&self) -> Option<Received<Vec<u8>>> {

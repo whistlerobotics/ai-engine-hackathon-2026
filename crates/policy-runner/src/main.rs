@@ -3,6 +3,7 @@ mod episode;
 mod gripper;
 mod log;
 mod policy;
+mod replay;
 mod ros;
 mod task;
 mod ui;
@@ -69,9 +70,30 @@ struct Args {
         default_value = "/right_camera/color/image_raw/compressed"
     )]
     right_topic: String,
+    /// Accept home, run, and quit on stdin for one isolated mock replay.
+    #[arg(long, requires = "mock_replay_steps")]
+    mock_replay_stdio: bool,
+    /// Run this number of replay steps, including any catch-up steps.
+    #[arg(
+        long,
+        requires = "mock_replay_stdio",
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(episode::STEPS))
+    )]
+    mock_replay_steps: Option<u32>,
+    /// Six recorded start joint angles in radians, in arm joint order.
+    #[arg(
+        long,
+        requires = "mock_replay_stdio",
+        num_args = 6,
+        allow_negative_numbers = true
+    )]
+    mock_replay_start: Option<Vec<f64>>,
 }
 
-fn require_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
+fn require_domain(mode: Mode, domain: Option<&str>, mock_replay: bool) -> Result<()> {
+    if mock_replay && mode != Mode::Mock {
+        bail!("mock replay requires --mode mock and ROS_DOMAIN_ID=77");
+    }
     if mode == Mode::Mock && domain != Some("77") {
         bail!("the isolated Spark mock requires ROS_DOMAIN_ID=77");
     }
@@ -81,28 +103,40 @@ fn require_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    require_domain(args.mode, std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
+    require_domain(
+        args.mode,
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+        args.mock_replay_stdio,
+    )?;
     if args.wrist_topic == args.left_topic
         || args.wrist_topic == args.right_topic
         || args.left_topic == args.right_topic
     {
         bail!("each camera role must have a distinct ROS topic");
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !args.mock_replay_stdio && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
         bail!("the policy runner needs a terminal: run it from an interactive shell");
     }
-    ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::Relaxed))?;
-
+    let start_pose = replay::start_pose(args.mock_replay_start)?;
     let pack = TaskPack::open(&args.task_pack)?;
     let log = Arc::new(Log::new());
     let policy = Policy::new(&args.policy)?;
-    let monitored_policy = Policy::new(&args.policy)?;
     let ros = Ros::new(
         args.mode,
         [&args.wrist_topic, &args.left_topic, &args.right_topic],
         Arc::clone(&log),
     )?;
     let shared = Shared::new(log);
+    if let Some(steps) = args.mock_replay_steps {
+        let result = replay::serve(&ros, &policy, &pack, &args.task, shared, &start_pose, steps);
+        if let Err(error) = &result {
+            let _ = replay::status(&format!("ERROR {error:#}"));
+        }
+        return result;
+    }
+
+    ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::Relaxed))?;
+    let monitored_policy = Policy::new(&args.policy)?;
 
     // After color-eyre's panic hook, so the terminal is restored before a panic is printed.
     let terminal = ratatui::try_init()?;
@@ -197,12 +231,47 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case(Mode::Mock, Some("77") => matches Ok(()))]
-    #[test_case(Mode::Real, Some("42") => matches Ok(()))]
-    #[test_case(Mode::Mock, Some("42") => matches Err(_))]
-    #[test_case(Mode::Mock, None => matches Err(_))]
-    #[test_case(Mode::Real, None => matches Ok(()))]
-    fn mode_and_ros_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
-        require_domain(mode, domain)
+    #[test_case(Mode::Mock, Some("77"), false => matches Ok(()))]
+    #[test_case(Mode::Real, Some("42"), false => matches Ok(()))]
+    #[test_case(Mode::Mock, Some("42"), false => matches Err(_))]
+    #[test_case(Mode::Mock, None, false => matches Err(_))]
+    #[test_case(Mode::Real, None, false => matches Ok(()))]
+    #[test_case(Mode::Mock, Some("77"), true => matches Ok(()))]
+    #[test_case(Mode::Real, Some("77"), true => matches Err(_))]
+    #[test_case(Mode::Mock, Some("42"), true => matches Err(_))]
+    fn mode_and_ros_domain(mode: Mode, domain: Option<&str>, mock_replay: bool) -> Result<()> {
+        require_domain(mode, domain, mock_replay)
+    }
+
+    #[test]
+    fn mock_replay_accepts_negative_start_angles() {
+        let args = Args::try_parse_from([
+            "policy-runner",
+            "--policy",
+            "http://127.0.0.1:18080",
+            "--task",
+            "bolt_to_tray",
+            "--task-pack",
+            "manifest.json",
+            "--mode",
+            "mock",
+            "--mock-replay-stdio",
+            "--mock-replay-steps",
+            "12",
+            "--mock-replay-start",
+            "-3.1477",
+            "-1.6507",
+            "-2.4943",
+            "-0.6170",
+            "1.4267",
+            "-4.5194",
+        ])
+        .unwrap();
+        assert_eq!(args.mode, Mode::Mock);
+        assert_eq!(args.mock_replay_steps, Some(12));
+        assert_eq!(
+            replay::start_pose(args.mock_replay_start).unwrap(),
+            worker::START_POSE
+        );
     }
 }

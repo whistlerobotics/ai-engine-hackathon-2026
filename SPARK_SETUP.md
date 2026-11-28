@@ -96,3 +96,56 @@ nonzero on missing or inactive inputs. It sends no arm or gripper commands.
 
 A passing preflight reports a live ROS graph. Check the driver checksum and
 physical stop and hold behavior at the cell.
+
+## Paired demo recorder
+
+Open the unconnected preview from the checkout root:
+
+```bash
+python3 tools/demo-tui.py --preview
+```
+
+Press **T** to choose a task from the manifest, **H** to confirm the guided
+start, and **C** to arm the recorder. Preview uses **Space** to simulate the
+physical button hold and release. Then **R** simulates home and replay,
+**S** saves, and **D** discards the draft. Preview data goes under
+`recording/demo-preview/`.
+
+The TUI starts on its own. Bring up ROS, the robot driver, cameras, and
+hand-guiding separately. Opening the TUI starts none of those services.
+It starts the existing recording and replay tools only when you select
+their actions.
+
+For a physical capture session, run this in the real ROS devcontainer:
+
+```bash
+python3 tools/demo-tui.py --observe-replay
+```
+
+The Human take uses Whistle's `mise run record` task on domain 42. After **C**, it
+waits for the button to be released, starts when the physical hand-guiding
+button is held, and ends when it is released. The default source is the named
+right camera at 640×360. For the original 640×480 camera feed, pass
+`--camera-topic /camera/color/image_raw/compressed`.
+
+**R** arms the existing three-camera bag recorder for the No human take. Wait
+for the TUI to report readiness before the cell operator runs the replay
+through the existing policy TUI. Mark the replay start with **B** and
+completion with **F**. These keys only mark the bag interval. The tool checks
+that the bag has samples from all three cameras and the required robot-state
+topics before enabling Save.
+
+Both takes keep Whistle's episode ID, for example `ep_20261128_123456`.
+They are stored under `recording/<task_id>/<episode_id>/` as `human.json` and
+`no_human/`, with timing and provenance in `demo.json`. The adjacent
+`<episode_id>_human.json` link lets existing JSON replay and video extraction
+tools read the Human take. **R** in review lets you redo the No human take
+with the same Human take.
+
+Pass `--input path/to/episode.json` to reuse a Human take with its existing task
+and episode IDs. Use `--task-pack` or `WHISTLE_TASK_PACK` to select a different
+manifest. For automated mock replay, open the TUI inside the isolated mock
+container with `--input` and a writable `--out-dir` on the shared checkout.
+It uses the existing `mise run test-policy` and `mise run policy-runner` tasks.
+The mock No human take contains mock state and a replay plan, with no camera
+recording.

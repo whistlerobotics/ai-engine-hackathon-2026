@@ -1,8 +1,8 @@
-use crate::ros::{CAMERA_TOPIC, Ros};
+use crate::ros::Ros;
 use jiff::ZonedDateTime;
 use policy_contract::{
     Joints, gripper,
-    image::{FrameError, check_jpeg},
+    image::{FrameError, check_jpeg_size},
     kinematics,
 };
 use serde::Serialize;
@@ -38,8 +38,8 @@ pub enum Stale {
     Arm,
     #[error("no fresh /gripper/joint_states")]
     Gripper,
-    #[error("no fresh frame on {CAMERA_TOPIC}")]
-    Camera,
+    #[error("no fresh frame on {0}")]
+    Camera(String),
     #[error(transparent)]
     Frame(#[from] FrameError),
 }
@@ -114,7 +114,12 @@ impl Episode {
 
 /// What the robot looks like now, or why it cannot be recorded. Permissive recording puts up with
 /// a missing camera frame or gripper reading, but never with a stale arm.
-pub fn observe(ros: &Ros, now: Instant, permissive: bool) -> Result<Observation, Stale> {
+pub fn observe(
+    ros: &Ros,
+    now: Instant,
+    permissive: bool,
+    camera_size: (usize, usize),
+) -> Result<Observation, Stale> {
     let arm = ros
         .arm()
         .filter(|arm| arm.is_fresh(now))
@@ -127,7 +132,7 @@ pub fn observe(ros: &Ros, now: Instant, permissive: bool) -> Result<Observation,
     if gripper.is_none() && !permissive {
         return Err(Stale::Gripper);
     }
-    let image = match camera_frame(ros, now) {
+    let image = match camera_frame(ros, now, camera_size) {
         Ok(jpeg) => Image::Camera(jpeg),
         Err(_) if permissive => Image::Black,
         Err(stale) => return Err(stale),
@@ -145,12 +150,12 @@ pub fn observe(ros: &Ros, now: Instant, permissive: bool) -> Result<Observation,
     })
 }
 
-fn camera_frame(ros: &Ros, now: Instant) -> Result<Vec<u8>, Stale> {
+fn camera_frame(ros: &Ros, now: Instant, camera_size: (usize, usize)) -> Result<Vec<u8>, Stale> {
     let frame = ros
         .camera()
         .filter(|frame| frame.is_fresh(now))
-        .ok_or(Stale::Camera)?;
-    check_jpeg(&frame.value)?;
+        .ok_or_else(|| Stale::Camera(ros.camera_topic().to_owned()))?;
+    check_jpeg_size(&frame.value, camera_size)?;
     Ok(frame.value)
 }
 
