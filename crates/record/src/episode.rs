@@ -47,6 +47,7 @@ pub enum Stale {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum End {
     Release,
+    Finish,
     TimeLimit,
     Stale(Stale),
     HandGuidingStopped,
@@ -57,6 +58,7 @@ impl fmt::Display for End {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Release => write!(f, "release"),
+            Self::Finish => write!(f, "finish"),
             Self::TimeLimit => write!(f, "time limit"),
             Self::Stale(stale) => write!(f, "{stale}"),
             Self::HandGuidingStopped => write!(f, "hand-guiding stopped"),

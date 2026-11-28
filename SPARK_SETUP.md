@@ -105,8 +105,8 @@ Open the unconnected preview from the checkout root:
 python3 tools/demo-tui.py --preview
 ```
 
-Press **T** to choose a task from the manifest, **H** to confirm the guided
-start, and **C** to arm the recorder. Preview uses **Space** to simulate the
+Press **T** to choose a task from the manifest, **H** to simulate homing,
+and **C** to arm the recorder. Preview uses **Space** to simulate the
 physical button hold and release. Then **R** simulates home and replay,
 **S** saves, and **D** discards the draft. Preview data goes under
 `recording/demo-preview/`.
@@ -116,29 +116,51 @@ hand-guiding separately. Opening the TUI starts none of those services.
 It starts the existing recording and replay tools only when you select
 their actions.
 
-For a physical capture session, run this in the real ROS devcontainer:
+For a supervised physical capture session, run this in the real ROS
+devcontainer with the cell operator at the physical stop.
+
+```bash
+python3 tools/demo-tui.py --drive-replay
+```
+
+1. **T** selects the task. Clear the cell, release hand-guiding, and press
+   **H**. The TUI uses the existing Rust runner to move to its home pose.
+2. **C** arms the existing Rust recorder. Hold the physical hand-guiding
+   button to record and release it to stage the Human take.
+3. Clear the cell and press **R**. The TUI homes the arm again, starts the
+   three-camera bag and Rust recorder, and runs the replay once both are ready.
+   **Esc** or **Ctrl-C** requests a stop during the arm sequence.
+4. **S** saves the pair after the Rust runner reports completion and the
+   recordings finish. **R** repeats the No human take from the same Human take.
+
+The physical runner uses its fixed home pose. Imported and freshly guided
+takes must start within its home tolerance. If you use the cabinet's existing
+replay controls, start the TUI in observer mode.
 
 ```bash
 python3 tools/demo-tui.py --observe-replay
 ```
 
-The Human take uses Whistle's `mise run record` task on domain 42. After **C**, it
-waits for the button to be released, starts when the physical hand-guiding
-button is held, and ends when it is released. The default source is the named
-right camera at 640×360. For the original 640×480 camera feed, pass
-`--camera-topic /camera/color/image_raw/compressed`.
-
-**R** starts Whistle's existing replay policy with the staged Human take and
-arms the three-camera bag recorder. When both are ready, the TUI shows the
-loopback policy URL for the cell operator's existing policy TUI in the same
-devcontainer. The operator handles homing and replay there. Mark the start
-with **B** and, once the operator has finished, end capture with **F**.
-Before enabling Save, the tool checks that the bag contains samples from all
-three cameras and the required robot-state topics.
+1. **T** selects the task. After the cell operator moves the arm to the
+   approved start pose, **H** opens Whistle's start-pose check in the same
+   terminal. The check returns to the demo TUI only after fresh joint
+   feedback confirms the pose.
+2. **C** arms Whistle's existing Rust recorder on domain 42. It waits for
+   a fresh hold of the physical hand-guiding button and saves the Human
+   take when the button is released. The default source is the named
+   right camera at 640×360. Use `--camera-topic /camera/color/image_raw/compressed`
+   for the original 640×480 camera.
+3. **R** loads the Human take into Whistle's replay policy and prepares a
+   second Rust recorder and the three-camera bag. The cell operator homes
+   and starts replay using the existing controls and the displayed policy
+   URL. The first replay action request starts the second Rust capture.
+4. After the operator finishes replay, **F** ends capture. **S** saves once
+   the Rust JSON and verified camera bag are ready.
 
 Both takes keep Whistle's episode ID, for example `ep_20261128_123456`.
 They are stored under `recording/<task_id>/<episode_id>/` as `human.json` and
-`no_human/`, with timing and provenance in `demo.json`. The adjacent
+`no_human.json`. The three-camera bag is in `no_human/` and timing and
+provenance are in `demo.json`. The adjacent
 `<episode_id>_human.json` link lets existing JSON replay and video extraction
 tools read the Human take. **R** in review lets you redo the No human take
 with the same Human take.

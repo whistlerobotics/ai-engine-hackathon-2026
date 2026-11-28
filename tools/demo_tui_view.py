@@ -7,7 +7,7 @@ from dataclasses import dataclass
 STAGES = ("capture", "home", "replay", "review")
 STAGE_NAMES = ("Human take", "Home", "Non-human take", "Review & save")
 ENTER_KEYS = ("\n", "\r", curses.KEY_ENTER)
-KEY_CAPTIONS = {"enter": "Enter", "space": "Space"}
+KEY_CAPTIONS = {"enter": "Enter", "space": "Space", "abort": "Esc"}
 
 
 @dataclass
@@ -188,6 +188,10 @@ def _loop(screen, controller):
 
         if character == curses.KEY_RESIZE:
             continue
+        if character in ("\x03", "\x1b") and "abort" in controller.actions:
+            pending.prompt = ""
+            controller.dispatch("abort")
+            continue
         if character == "\x03":
             if pending.prompt:
                 pending.prompt = ""
@@ -218,6 +222,16 @@ def _loop(screen, controller):
                 pending.task_index = choices.index(controller.task) if controller.task in choices else 0
             elif key == "d":
                 pending.prompt = "discard"
+            elif controller.uses_operator_terminal(key):
+                curses.flushinp()
+                curses.def_prog_mode()
+                curses.endwin()
+                try:
+                    controller.dispatch(key)
+                finally:
+                    curses.reset_prog_mode()
+                    curses.flushinp()
+                    screen.clearok(True)
             else:
                 controller.dispatch(key)
 

@@ -11,7 +11,10 @@ mod worker;
 
 use app::{App, Phase, Robot, Shared};
 use clap::Parser;
-use color_eyre::{Result, eyre::bail};
+use color_eyre::{
+    Result,
+    eyre::{bail, ensure, eyre},
+};
 use log::Log;
 use policy::Policy;
 use ratatui::{
@@ -21,7 +24,7 @@ use ratatui::{
 use ros::{Mode, Ros};
 use std::path::PathBuf;
 use std::{
-    io::{self, IsTerminal},
+    io::{self, IsTerminal, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -43,15 +46,15 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 #[derive(Parser)]
 struct Args {
     /// The policy server's base URL.
-    #[arg(long, env = "WHISTLE_POLICY_URL")]
-    policy: String,
+    #[arg(long, env = "WHISTLE_POLICY_URL", required_unless_present = "operator_home_only")]
+    policy: Option<String>,
     /// The `task_id` sent to the policy; `t` changes it between episodes.
-    #[arg(long)]
-    task: String,
+    #[arg(long, required_unless_present = "operator_home_only")]
+    task: Option<String>,
     #[arg(long, env = "WHISTLE_MODE", value_enum, default_value = "real")]
     mode: Mode,
-    #[arg(long, env = "WHISTLE_TASK_PACK")]
-    task_pack: PathBuf,
+    #[arg(long, env = "WHISTLE_TASK_PACK", required_unless_present = "operator_home_only")]
+    task_pack: Option<PathBuf>,
     #[arg(
         long,
         env = "WHISTLE_WRIST_TOPIC",
@@ -88,6 +91,9 @@ struct Args {
         allow_negative_numbers = true
     )]
     mock_replay_start: Option<Vec<f64>>,
+    /// Confirm the physical start pose, or move the isolated mock after a prompt.
+    #[arg(long, conflicts_with = "mock_replay_stdio")]
+    operator_home_only: bool,
 }
 
 fn require_domain(mode: Mode, domain: Option<&str>, mock_replay: bool) -> Result<()> {
@@ -117,18 +123,22 @@ fn main() -> Result<()> {
     if !args.mock_replay_stdio && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
         bail!("the policy runner needs a terminal: run it from an interactive shell");
     }
+    let topics = [&*args.wrist_topic, &*args.left_topic, &*args.right_topic];
+    if args.operator_home_only {
+        return operator_home(args.mode, topics);
+    }
+
     let start_pose = replay::start_pose(args.mock_replay_start)?;
-    let pack = TaskPack::open(&args.task_pack)?;
+    let task_pack = args.task_pack.ok_or_else(|| eyre!("missing --task-pack"))?;
+    let task = args.task.ok_or_else(|| eyre!("missing --task"))?;
+    let policy_url = args.policy.ok_or_else(|| eyre!("missing --policy"))?;
+    let pack = TaskPack::open(&task_pack)?;
     let log = Arc::new(Log::new());
-    let policy = Policy::new(&args.policy)?;
-    let ros = Ros::new(
-        args.mode,
-        [&args.wrist_topic, &args.left_topic, &args.right_topic],
-        Arc::clone(&log),
-    )?;
+    let policy = Policy::new(&policy_url)?;
+    let ros = Ros::new(args.mode, topics, Arc::clone(&log))?;
     let shared = Shared::new(log);
     if let Some(steps) = args.mock_replay_steps {
-        let result = replay::serve(&ros, &policy, &pack, &args.task, shared, &start_pose, steps);
+        let result = replay::serve(&ros, &policy, &pack, &task, shared, &start_pose, steps);
         if let Err(error) = &result {
             let _ = replay::status(&format!("ERROR {error:#}"));
         }
@@ -136,7 +146,7 @@ fn main() -> Result<()> {
     }
 
     ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::Relaxed))?;
-    let monitored_policy = Policy::new(&args.policy)?;
+    let monitored_policy = Policy::new(&policy_url)?;
 
     // After color-eyre's panic hook, so the terminal is restored before a panic is printed.
     let terminal = ratatui::try_init()?;
@@ -148,7 +158,7 @@ fn main() -> Result<()> {
         });
         scope.spawn(|| monitor(&monitored_policy, &shared));
 
-        let app = App::new(&shared, commands, args.policy.clone(), args.task.clone());
+        let app = App::new(&shared, commands, policy_url, task);
         let stop = StopOnDrop(&shared);
         let ui = run_ui(terminal, app, &ros, || worker.is_finished());
         drop(stop);
@@ -163,6 +173,65 @@ fn main() -> Result<()> {
         println!("{report}");
     }
     result
+}
+
+fn operator_home(mode: Mode, topics: [&str; 3]) -> Result<()> {
+    if mode == Mode::Real && std::env::var("ROS_DOMAIN_ID").as_deref() != Ok("42") {
+        bail!("operator homing on the physical Spark requires ROS_DOMAIN_ID=42");
+    }
+
+    let log = Arc::new(Log::new());
+    let ros = Ros::new(mode, topics, Arc::clone(&log))?;
+
+    if mode == Mode::Real {
+        println!("Start-pose verification");
+        println!("Press Enter after the cell operator has positioned the arm.");
+    } else {
+        println!("Move the mock arm to the saved start pose");
+        println!("Press Enter to move once.");
+    }
+    print!("Type q then Enter to cancel: ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    let answered = io::stdin().read_line(&mut answer)? != 0;
+    ensure!(
+        answered && answer.trim_end_matches(['\r', '\n']).is_empty(),
+        "start-pose check cancelled"
+    );
+    if mode == Mode::Real {
+        verify_operator_start(&ros)?;
+        println!("At the start pose.");
+        return Ok(());
+    }
+
+    let shared = Arc::new(Shared::new(log));
+    let cancel = Arc::clone(&shared);
+    ctrlc::set_handler(move || cancel.cancel.store(true, Ordering::Relaxed))?;
+    println!("Moving to the start pose. Press Ctrl-C to cancel.");
+    if !worker::move_to_start(&ros, &shared, &worker::START_POSE)? {
+        let last = shared.log.latest(1);
+        let reason = last
+            .first()
+            .map_or("start pose was not verified", |line| line.text.as_str());
+        bail!("{reason}");
+    }
+    println!("At the start pose.");
+    Ok(())
+}
+
+fn verify_operator_start(ros: &Ros) -> Result<()> {
+    let confirmed = Instant::now();
+    while confirmed.elapsed() < Duration::from_secs(2) {
+        if let Some(arm) = ros.arm().filter(|arm| arm.at > confirmed && arm.is_fresh()) {
+            ensure!(
+                worker::distance_to_start(&arm.value.position) <= worker::TOLERANCE,
+                "the measured arm position is outside the start-pose tolerance"
+            );
+            return Ok(());
+        }
+        thread::sleep(FRAME);
+    }
+    bail!("start pose could not be verified without fresh arm feedback");
 }
 
 /// Holds the arm if the display ends while it moves, and ends the policy monitor, also when the
@@ -272,6 +341,23 @@ mod tests {
         assert_eq!(
             replay::start_pose(args.mock_replay_start).unwrap(),
             worker::START_POSE
+        );
+    }
+
+    #[test]
+    fn operator_home_accepts_no_policy_or_task() {
+        let args = Args::try_parse_from(["policy-runner", "--mode", "real", "--operator-home-only"])
+            .unwrap();
+        assert!(args.operator_home_only);
+    }
+
+    #[test]
+    fn policy_run_still_requires_policy_and_task() {
+        use std::assert_matches;
+
+        assert_matches!(
+            Args::try_parse_from(["policy-runner", "--mode", "real"]),
+            Err(_)
         );
     }
 }

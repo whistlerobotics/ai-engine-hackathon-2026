@@ -1,5 +1,6 @@
 mod episode;
 mod file;
+mod policy_take;
 mod ros;
 
 use crate::{
@@ -45,6 +46,9 @@ struct Args {
     /// Exit after saving one episode.
     #[arg(long)]
     once: bool,
+    /// Capture one policy take in response to start and finish lines on stdin.
+    #[arg(long, conflicts_with = "permissive")]
+    policy_take: bool,
     /// The longest an episode runs, in seconds, at most 60. It is then saved; the next one starts
     /// with the next press.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=60))]
@@ -96,16 +100,21 @@ fn main() -> Result<()> {
         signal_hook::flag::register_usize(number, Arc::clone(&signal), usize::try_from(number)?)?;
     }
 
-    println!(
-        "Hold the hand-guiding button to record an episode of {}; release it to save. Ctrl-C to quit.",
-        args.task
-    );
+    if !args.policy_take {
+        println!(
+            "Hold the hand-guiding button to record an episode of {}; release it to save. Ctrl-C to quit.",
+            args.task
+        );
+    }
     let mut recorder = Recorder {
         ros: Ros::new(&args.camera_topic)?,
         args,
         max_steps,
         saved: 0,
     };
+    if recorder.args.policy_take {
+        return policy_take::run(&mut recorder, &signal);
+    }
     let started = Instant::now();
     let mut reported_silent = false;
     let mut state = State::WaitingForRelease;
@@ -282,7 +291,7 @@ impl Recorder {
                 );
                 self.saved += 1;
             }
-            Err(error) if self.args.once => {
+            Err(error) if self.args.once || self.args.policy_take => {
                 return Err(error.wrap_err(format!("Saving {} failed", episode.id)));
             }
             Err(error) => {
@@ -334,6 +343,7 @@ mod tests {
         assert_eq!(args.camera_topic, DEFAULT_CAMERA_TOPIC);
         assert_eq!(args.camera_size, DEFAULT_CAMERA_SIZE);
         assert!(!args.once);
+        assert!(!args.policy_take);
 
         let args = Args::try_parse_from([
             "record",
@@ -349,6 +359,9 @@ mod tests {
         assert_eq!(args.camera_topic, "/left_camera/color/image_raw/compressed");
         assert_eq!(args.camera_size, (640, 360));
         assert!(args.once);
+
+        let args = Args::try_parse_from(["record", "--task", "example", "--policy-take"]).unwrap();
+        assert!(args.policy_take);
     }
 
     #[test_case("bench_lift_can_v0" => matches Ok(_))]
