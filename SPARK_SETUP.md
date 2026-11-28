@@ -47,3 +47,28 @@ bash ~/run-rc-qwen-ros-sim.sh
 
 Quit the existing mock runner with q while idle before opening the Qwen runner.
 See the Qwen section in [ROS driver simulation](ROS_DRIVER_SIMULATION.md).
+
+## Real-arm ROS preflight
+
+From the Spark ROS Kilted environment that can see the existing real ROS domain,
+run:
+
+```bash
+ROS_DOMAIN_ID=42 mise run real-arm-preflight
+```
+
+This checks for arm and gripper messages, the External Control program status,
+active arm and gripper controllers, and frames from the three cameras. It exits
+nonzero on missing or inactive inputs. It sends no arm or gripper commands.
+
+The real driver launch accepts `kinematics_params_file` and forwards it to the
+UR driver. For cell commissioning, the operator should select the calibration
+YAML extracted from the connected UR12e, then confirm the driver's console
+reports a matching calibration. A previous Spark startup reported a checksum
+mismatch even though the calibration extraction log reported completion.
+[Universal Robots calibration and startup documentation](https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation/kilted/doc/ur_robot_driver/ur_robot_driver/doc/usage/startup.html)
+
+A passing preflight reports a live ROS graph. It does not verify the physical
+stop or hold outcome, watchdog, or camera calibration. The v3 policy runner is
+still mock-only. The cell operator must verify those behaviors before enabling
+the policy command path on the physical arm.

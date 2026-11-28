@@ -5,6 +5,8 @@
   <!-- Lowercase, not Python's True: ur_control.launch.py compares use_mock_hardware to "true". -->
   <let name="mock" value="$(eval '\'true\' if \'$(var robot)\' == \'mock\' else \'false\'')"/>
   <let name="real" value="$(eval '\'true\' if \'$(var robot)\' == \'real\' else \'false\'')"/>
+  <arg name="kinematics_params_file" default="$(find-pkg-share ur_description)/config/ur12e/default_kinematics.yaml"
+       description="UR12e kinematics YAML; use the extracted, cabinet-matched calibration on real hardware"/>
   <arg name="camera" default="false" description="Start camera drivers here; leave false when the three standalone cameras are running"/>
   <arg name="three_view" default="false" description="Start all three cameras (left, right, wrist) at 640x360 instead of the right one alone at 640x480"/>
   <arg name="rviz" default="false" description="Start RViz showing the arm and gripper"/>
@@ -22,6 +24,7 @@
   <include file="$(find-pkg-share ur_robot_driver)/launch/ur_control.launch.py">
     <arg name="ur_type" value="ur12e"/>
     <arg name="robot_ip" value="$(var robot_ip)"/>
+    <arg name="kinematics_params_file" value="$(var kinematics_params_file)"/>
     <arg name="use_mock_hardware" value="$(var mock)"/>
     <arg name="headless_mode" value="$(var headless_mode)"/>
     <arg name="update_rate_config_file" value="$(var ur_overrides)"/>

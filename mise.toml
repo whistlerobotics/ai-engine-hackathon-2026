@@ -13,6 +13,10 @@ depends = ["build-hand-guiding"]
 dir = "{{config_root}}/robot"
 run = "ros2 launch launch.xml robot:=real"
 
+[tasks.real-arm-preflight]
+description = "Inspect live Spark ROS topics and controller state without commanding hardware"
+run = "python3 tools/real_arm_preflight.py"
+
 [tasks.build-hand-guiding]
 description = "Build hand-guiding, which mock-robot and real-robot start"
 run = "cargo build --release -p hand-guiding"
