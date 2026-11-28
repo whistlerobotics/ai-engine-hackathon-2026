@@ -25,6 +25,11 @@ ROS_DOMAIN_ID=42 mise run policy-runner-legacy -- \
   --camera-topic /right_camera/color/image_raw/compressed --camera-size 640x360
 ```
 
+The legacy and recording launchers reset inherited ROS overlay search paths
+before sourcing Kilted and the gripper workspace. This prevents an already
+sourced Orbbec workspace from pulling its unrelated generated message bindings
+into the Rust link. `ROS_DOMAIN_ID` and policy settings are preserved.
+
 The original `mise run policy-runner` still runs forjoe's schema v3 runner.
 Physical gripper communication and camera-to-base calibration remain separate
 commissioning requirements. These launchers do not start episodes automatically.
