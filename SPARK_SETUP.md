@@ -31,6 +31,11 @@ sourced Orbbec workspace from pulling its unrelated generated message bindings
 into the Rust link. `ROS_DOMAIN_ID` and policy settings are preserved.
 
 The original `mise run policy-runner` still runs forjoe's schema v3 runner.
+On real ROS domain 42, the legacy launcher first runs the read-only real-arm
+preflight and refuses to start without a running External Control program,
+active controllers, positive speed scaling and the required feedback/cameras.
+`--help` skips the preflight. This is a startup check; it does not make the
+legacy runner's wall-clock action schedule follow controller speed scaling.
 Physical gripper communication and camera-to-base calibration remain separate
 commissioning requirements. These launchers do not start episodes automatically.
 

@@ -4,6 +4,7 @@
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 TIMEOUT = 10
@@ -20,7 +21,15 @@ def sample(topic: str, message_type: str, field: str, *, latched: bool = False) 
     )
 
 
-def probe(check: tuple[str, tuple[str, ...], str]) -> bool:
+def positive_speed(output: str) -> bool:
+    values = [line.strip() for line in output.splitlines() if line.strip() not in ("", "---")]
+    try:
+        return len(values) == 1 and 0.0 < float(values[0]) <= 1.0
+    except ValueError:
+        return False
+
+
+def probe(check: tuple[str, tuple[str, ...], str | Callable[[str], bool]]) -> bool:
     label, arguments, expected = check
     try:
         result = subprocess.run(
@@ -31,7 +40,9 @@ def probe(check: tuple[str, tuple[str, ...], str]) -> bool:
         print(f"FAIL {label} ({error})")
         return False
     output = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
-    if arguments[0] == "control":
+    if callable(expected):
+        matches = expected(output)
+    elif arguments[0] == "control":
         matches = any(
             fields[0] == expected and fields[-1] == "active"
             for line in output.splitlines()
@@ -63,6 +74,9 @@ def main() -> int:
         ("active arm trajectory controller",
          ("control", "list_controllers", "-c", "/controller_manager"),
          "joint_trajectory_controller"),
+        ("positive controller speed scaling", sample(
+            "/speed_scaling_state_broadcaster/speed_scaling", "std_msgs/msg/Float64", "data"),
+         positive_speed),
         ("active gripper controller",
          ("control", "list_controllers", "-c", "/gripper/controller_manager"),
          "finger_position_controller"),

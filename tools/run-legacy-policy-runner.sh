@@ -7,6 +7,15 @@ source /home/rosdev/robotiq_ws/install/local_setup.sh
 set -u
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+help_requested=false
+for argument in "$@"; do
+    if [[ $argument == --help || $argument == -h ]]; then
+        help_requested=true
+    fi
+done
+if [[ ${ROS_DOMAIN_ID:-0} == 42 ]] && ! "$help_requested"; then
+    python3 "$repo_dir/tools/real_arm_preflight.py"
+fi
 revision=d6f0ace748600d2a94dc09de5b7711a6d127018a
 source_dir="$repo_dir/target/legacy-policy-runner/source-$revision"
 target_dir="$repo_dir/target/legacy-policy-runner/build"
