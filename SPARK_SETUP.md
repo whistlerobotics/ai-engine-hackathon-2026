@@ -48,6 +48,39 @@ bash ~/run-rc-qwen-ros-sim.sh
 Quit the existing mock runner with q while idle before opening the Qwen runner.
 See the Qwen section in [ROS driver simulation](ROS_DRIVER_SIMULATION.md).
 
+## Real-arm policy runner
+
+Use the Spark ROS Kilted devcontainer on domain 42 with the cell operator.
+Use Whistle's existing real ROS stack and cabinet configuration. If the
+stack is already up, reuse it. The original bring-up command is:
+
+```bash
+ROS_DOMAIN_ID=42 mise run real-robot robot_ip:=192.168.56.101
+```
+
+Start the v3 policy separately. For a connection check before real goal photos
+are available, use the bundled simulator pack. It has three rendered goal
+views per public task. In a second terminal at the checkout root, run:
+
+```bash
+export ROS_DOMAIN_ID=42
+export WHISTLE_TASK_PACK="$PWD/task-packs/simulator/manifest.json"
+mise run policy-runner -- --task bolt_to_tray --policy http://whistle-policy:8080
+```
+
+The runner reads the wrist, left and right camera topics directly on domain
+42 and sends those images with the selected task's instruction and three goal
+images. Enter moves to the saved start pose, Enter starts the episode, and Esc
+requests a stop and checks the arm's hold. Verify those controls with the cell
+operator before running a policy on the physical arm.
+
+For physical goal evaluation, set `WHISTLE_TASK_PACK` to the cell's manifest.
+For each task, photograph the same finished arrangement from the wrist, left,
+and right cameras. Save distinct 640×360 JPEGs as
+`<task_id>/<variant>/{wrist,left,right}.jpg` next to that manifest and update
+their paths and SHA-256 values. The runner loads the selected task's three
+goal images once when the episode starts.
+
 ## Real-arm ROS preflight
 
 From the Spark ROS Kilted environment that can see the existing real ROS domain,
@@ -61,11 +94,5 @@ This checks for arm and gripper messages, the External Control program status,
 active arm and gripper controllers, and frames from the three cameras. It exits
 nonzero on missing or inactive inputs. It sends no arm or gripper commands.
 
-The real driver launch follows Whistle's existing calibration wiring. A prior
-Spark driver startup reported a calibration checksum mismatch. Check the
-driver's console with the cell operator before commissioning physical motion.
-
-A passing preflight reports a live ROS graph. It does not verify the physical
-stop or hold outcome, watchdog, or camera calibration. The v3 policy runner is
-still mock-only. The cell operator must verify those behaviors before enabling
-the policy command path on the physical arm.
+A passing preflight reports a live ROS graph. Check the driver checksum and
+physical stop and hold behavior at the cell.

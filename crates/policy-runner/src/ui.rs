@@ -3,6 +3,7 @@ use crate::{
     episode::{BUDGET, MAX_TRACKING_ERROR, Progress, STEPS},
     gripper::GripperHardware,
     policy::{Health, Readiness},
+    ros::Mode,
 };
 use policy_contract::STEP;
 use ratatui::{
@@ -14,7 +15,7 @@ use ratatui::{
 };
 use std::time::Duration;
 
-pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
+pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot, mode: Mode) {
     let [header, middle, log, footer] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Length(12),
@@ -26,14 +27,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &App<'_>, robot: Robot) {
         Layout::horizontal([Constraint::Length(30), Constraint::Fill(1)]).areas(middle);
     let phase = *app.shared.phase.lock();
 
-    draw_header(frame, header, app, phase);
+    draw_header(frame, header, app, phase, mode);
     draw_robot(frame, robot_area, robot);
     draw_episode(frame, episode_area, app, phase);
     draw_log(frame, log, app);
     frame.render_widget(footer_line(app, phase), footer);
 }
 
-fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
+fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase, mode: Mode) {
     let mut policy = vec![Span::raw("Policy  "), Span::raw(app.policy_url.clone())];
     match app.shared.policy.lock().as_ref() {
         None => policy.push(Span::raw("    not polled yet")),
@@ -47,9 +48,13 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App<'_>, phase: Phase) {
     if phase == Phase::Running {
         policy.push(Span::raw("    polling paused during the episode"));
     }
+    let mode = match mode {
+        Mode::Mock => "MOCK",
+        Mode::Real => "REAL ARM",
+    };
     let connection = Line::from(format!(
-        "Task    {}    Policy input  wrist, left, right    MOCK",
-        app.task_id
+        "Task    {}    Policy input  wrist, left, right    {mode}",
+        app.task_id,
     ));
     frame.render_widget(
         Paragraph::new(vec![Line::from(policy), connection])
@@ -346,7 +351,9 @@ mod tests {
             "bench_lift_can_v0".to_owned(),
         );
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &app, robot)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &app, robot, Mode::Mock))
+            .unwrap();
         let buffer = terminal.backend().buffer();
         buffer
             .content()

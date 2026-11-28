@@ -1,6 +1,6 @@
 use crate::{
     policy::Policy,
-    ros::{Received, Ros},
+    ros::{Mode, Received, Ros},
     task::Task,
 };
 use color_eyre::{
@@ -21,6 +21,7 @@ use std::{
 
 pub const STEPS: u32 = 1200;
 pub const BUDGET: Duration = Duration::from_secs(90);
+const REAL_WALL_LIMIT: Duration = Duration::from_secs(150);
 pub const MAX_TRACKING_ERROR: f64 = 0.25;
 /// How often a sleep checks for Ctrl-C and the budget.
 const SLEEP_SLICE: Duration = Duration::from_millis(5);
@@ -286,11 +287,15 @@ impl<'a> Episode<'a> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Stop::Aborted);
         }
-        if !self.ros.controller_ready() || !self.ros.gripper_ready() {
-            return Err(eyre!(
-                "mock controller inactive, feedback stale or command subscribers changed"
-            )
-            .into());
+        if self.ros.mode() == Mode::Real && self.started.elapsed() >= REAL_WALL_LIMIT {
+            return Err(eyre!("real-arm wall time limit reached").into());
+        }
+        if let Some(issue) = self
+            .ros
+            .controller_issue()
+            .or_else(|| self.ros.gripper_issue())
+        {
+            return Err(eyre!("{issue}").into());
         }
         self.ros.check_cameras()?;
         self.observe()?;

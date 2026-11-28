@@ -223,7 +223,7 @@ impl<'a> App<'a> {
                 }
             }
             if !robot.gripper_controller_live {
-                reasons.push("mock gripper controller unavailable".to_owned());
+                reasons.push("gripper controller unavailable".to_owned());
             }
             match self.shared.policy.lock().as_ref() {
                 Some(status)
@@ -237,7 +237,7 @@ impl<'a> App<'a> {
             }
         }
         if !robot.controller_live {
-            reasons.push("mock arm controller inactive, unverified, missing feedback or conflicting subscribers".to_owned());
+            reasons.push("arm controller or robot not ready".to_owned());
         }
         if !robot.arm_live {
             reasons.push("the arm's joint state is stale".to_owned());

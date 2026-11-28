@@ -33,6 +33,12 @@ Inside the container, `lsusb` should then list the camera.
 Tasks are run with [mise](https://mise.jdx.dev). Run `mise tasks` to see all tasks and what they
 do. Extra arguments go through to the launch file or the program, e.g. `mise run mock-robot rviz:=true`.
 
+### On the real arm
+
+Use the [Spark real-arm workflow](SPARK_SETUP.md#real-arm-policy-runner). The
+runner sends schema v3 directly to the policy using the live wrist, left and
+right camera topics and the selected task pack.
+
 ### On mock hardware
 
 Use the [Spark schema v3 workflow](ROS_DRIVER_SIMULATION.md#schema-v3-mock-run)

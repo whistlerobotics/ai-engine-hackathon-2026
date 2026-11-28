@@ -1,6 +1,6 @@
 use roxmltree::{Document, Node};
 
-const ROBOTIQ_PLUGIN: &str = "robotiq_driver/RobotiqGripperHardwareInterface";
+pub(crate) const ROBOTIQ_PLUGIN: &str = "robotiq_driver/RobotiqGripperHardwareInterface";
 /// `robotiq_driver` multiplies `gripper_force_multiplier` by this, not by `gripper_max_force`,
 /// which only caps the result.
 const DRIVER_FORCE: f64 = 235.0;

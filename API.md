@@ -1,6 +1,6 @@
 # Policy HTTP contract v0, schema version 3
 
-The mock runner connects directly to a policy server over HTTP on the
+The runner connects directly to a policy server over HTTP on the
 private container network. Set `--policy` to its HTTP origin.
 
 - `GET /healthz` returns 200 once the server responds.

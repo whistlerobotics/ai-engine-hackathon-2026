@@ -50,10 +50,9 @@ pub fn serve(
                         status.health,
                         status.readiness
                     );
-                    ensure!(
-                        ros.controller_ready() && ros.gripper_ready(),
-                        "mock controllers are not ready"
-                    );
+                    if let Some(issue) = ros.controller_issue().or_else(|| ros.gripper_issue()) {
+                        return Err(eyre!("{issue}"));
+                    }
                     ensure!(
                         ros.arm()
                             .filter(Received::is_fresh)
@@ -99,10 +98,9 @@ fn start_move(from: &Joints) -> Duration {
 }
 
 fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
-    ensure!(
-        ros.controller_ready(),
-        "mock description, active controller, isolated subscriber and fresh controller feedback required"
-    );
+    if let Some(issue) = ros.controller_issue() {
+        return Err(eyre!("{issue}"));
+    }
     let arm = ros
         .arm()
         .filter(Received::is_fresh)
@@ -122,7 +120,7 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
         let stop = if shared.cancel.load(Ordering::Relaxed) {
             "operator cancelled"
         } else if !ros.controller_ready() || !measured.is_fresh() {
-            "mock controller or arm feedback lost"
+            "arm controller or feedback lost"
         } else if sent.elapsed() < duration {
             thread::sleep(POLL);
             continue;
@@ -141,9 +139,7 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
             "start pose not reached"
         };
         ros.hold(&measured.value.position)?;
-        shared
-            .log
-            .push(format!("Move stopped: {stop}. Hold requested."));
+        shared.log.push(format!("Move stopped: {stop}."));
         return Ok(false);
     }
 }

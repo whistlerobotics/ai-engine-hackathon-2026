@@ -17,7 +17,7 @@ use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
 };
-use ros::Ros;
+use ros::{Mode, Ros};
 use std::path::PathBuf;
 use std::{
     io::{self, IsTerminal},
@@ -47,8 +47,8 @@ struct Args {
     /// The `task_id` sent to the policy; `t` changes it between episodes.
     #[arg(long)]
     task: String,
-    #[arg(long, env = "WHISTLE_MODE", value_parser=["mock","real"])]
-    mode: String,
+    #[arg(long, env = "WHISTLE_MODE", value_enum, default_value = "real")]
+    mode: Mode,
     #[arg(long, env = "WHISTLE_TASK_PACK")]
     task_pack: PathBuf,
     #[arg(
@@ -71,14 +71,13 @@ struct Args {
     right_topic: String,
 }
 
-fn require_mock_domain(mode: &str, domain: Option<&str>) -> Result<()> {
-    if mode != "mock" {
-        bail!(
-            "real mode unavailable: physical calibration, watchdog and stop verification pending"
-        );
-    }
-    if domain != Some("77") {
-        bail!("the isolated Spark mock requires ROS_DOMAIN_ID=77");
+fn require_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
+    let expected = match mode {
+        Mode::Real => "42",
+        Mode::Mock => "77",
+    };
+    if domain != Some(expected) {
+        bail!("{mode:?} requires ROS_DOMAIN_ID={expected}");
     }
     Ok(())
 }
@@ -86,7 +85,7 @@ fn require_mock_domain(mode: &str, domain: Option<&str>) -> Result<()> {
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    require_mock_domain(&args.mode, std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
+    require_domain(args.mode, std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
     if args.wrist_topic == args.left_topic
         || args.wrist_topic == args.right_topic
         || args.left_topic == args.right_topic
@@ -103,6 +102,7 @@ fn main() -> Result<()> {
     let policy = Policy::new(&args.policy)?;
     let monitored_policy = Policy::new(&args.policy)?;
     let ros = Ros::new(
+        args.mode,
         [&args.wrist_topic, &args.left_topic, &args.right_topic],
         Arc::clone(&log),
     )?;
@@ -157,7 +157,7 @@ fn run_ui(
     let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     loop {
         let robot = Robot::read(ros);
-        terminal.draw(|frame| ui::draw(frame, &app, robot))?;
+        terminal.draw(|frame| ui::draw(frame, &app, robot, ros.mode()))?;
         if app.quit || worker_finished() {
             return Ok(());
         }
@@ -201,11 +201,12 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
-    #[test_case("mock",Some("77") => matches Ok(()))]
-    #[test_case("real",Some("77") => matches Err(_))]
-    #[test_case("mock",Some("42") => matches Err(_))]
-    #[test_case("mock",None => matches Err(_))]
-    fn mode_and_ros_domain(mode: &str, domain: Option<&str>) -> Result<()> {
-        require_mock_domain(mode, domain)
+    #[test_case(Mode::Mock, Some("77") => matches Ok(()))]
+    #[test_case(Mode::Real, Some("42") => matches Ok(()))]
+    #[test_case(Mode::Real, Some("77") => matches Err(_))]
+    #[test_case(Mode::Mock, Some("42") => matches Err(_))]
+    #[test_case(Mode::Real, None => matches Err(_))]
+    fn mode_and_ros_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
+        require_domain(mode, domain)
     }
 }
