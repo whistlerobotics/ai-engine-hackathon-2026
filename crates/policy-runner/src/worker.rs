@@ -2,7 +2,7 @@ use crate::{
     app::{Command, Phase, Shared},
     episode::Episode,
     policy::{Health, Policy, Readiness},
-    ros::{Received, Ros},
+    ros::{Mode, Received, Ros},
     task::TaskPack,
 };
 use color_eyre::{
@@ -126,9 +126,10 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
             continue;
         } else if measured.at > sent
             && distance_to_start(&measured.value.position) <= TOLERANCE
-            && ros.reference().is_some_and(|r| {
-                r.is_fresh() && r.at > sent && distance_to_start(&r.value) <= TOLERANCE
-            })
+            && (ros.mode() == Mode::Real
+                || ros
+                    .reference()
+                    .is_some_and(|r| r.at > sent && distance_to_start(&r.value) <= TOLERANCE))
         {
             shared.log.push("At the start pose.");
             return Ok(true);
@@ -139,7 +140,9 @@ fn move_to_start(ros: &Ros, shared: &Shared) -> Result<bool> {
             "start pose not reached"
         };
         ros.hold(&measured.value.position)?;
-        shared.log.push(format!("Move stopped: {stop}."));
+        shared
+            .log
+            .push(format!("Move stopped: {stop}. Hold requested."));
         return Ok(false);
     }
 }

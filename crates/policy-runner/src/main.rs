@@ -72,12 +72,8 @@ struct Args {
 }
 
 fn require_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
-    let expected = match mode {
-        Mode::Real => "42",
-        Mode::Mock => "77",
-    };
-    if domain != Some(expected) {
-        bail!("{mode:?} requires ROS_DOMAIN_ID={expected}");
+    if mode == Mode::Mock && domain != Some("77") {
+        bail!("the isolated Spark mock requires ROS_DOMAIN_ID=77");
     }
     Ok(())
 }
@@ -203,9 +199,9 @@ mod tests {
 
     #[test_case(Mode::Mock, Some("77") => matches Ok(()))]
     #[test_case(Mode::Real, Some("42") => matches Ok(()))]
-    #[test_case(Mode::Real, Some("77") => matches Err(_))]
     #[test_case(Mode::Mock, Some("42") => matches Err(_))]
-    #[test_case(Mode::Real, None => matches Err(_))]
+    #[test_case(Mode::Mock, None => matches Err(_))]
+    #[test_case(Mode::Real, None => matches Ok(()))]
     fn mode_and_ros_domain(mode: Mode, domain: Option<&str>) -> Result<()> {
         require_domain(mode, domain)
     }

@@ -71,7 +71,7 @@ mise run policy-runner -- --task bolt_to_tray --policy http://whistle-policy:808
 The runner reads the wrist, left and right camera topics directly on domain
 42 and sends those images with the selected task's instruction and three goal
 images. Enter moves to the saved start pose, Enter starts the episode, and Esc
-requests a stop and checks the arm's hold. Verify those controls with the cell
+sends Whistle's hold command. Verify those controls with the cell
 operator before running a policy on the physical arm.
 
 For physical goal evaluation, set `WHISTLE_TASK_PACK` to the cell's manifest.

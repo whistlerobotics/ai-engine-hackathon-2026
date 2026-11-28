@@ -1,7 +1,4 @@
-use crate::{
-    gripper::{GripperHardware, ROBOTIQ_PLUGIN},
-    log::Log,
-};
+use crate::{gripper::GripperHardware, log::Log};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use color_eyre::{
     Result,
@@ -19,9 +16,8 @@ use ros_env::{
     control_msgs::msg::JointTrajectoryControllerState,
     controller_manager_msgs::msg::ControllerManagerActivity,
     sensor_msgs::msg::{CompressedImage, JointState},
-    std_msgs::msg::{Bool, Float64, Float64MultiArray, String as StringMsg},
+    std_msgs::msg::{Float64, Float64MultiArray, String as StringMsg},
     trajectory_msgs::msg::{JointTrajectory, JointTrajectoryPoint},
-    ur_dashboard_msgs::msg::{RobotMode, SafetyMode},
 };
 use std::{
     sync::Arc,
@@ -35,11 +31,6 @@ const SPEED_SCALING_TOPIC: &str = "/speed_scaling_state_broadcaster/speed_scalin
 const GRIPPER_DESCRIPTION_TOPIC: &str = "/gripper/robot_description";
 const TRAJECTORY_TOPIC: &str = "/joint_trajectory_controller/joint_trajectory";
 const FINGER_COMMAND_TOPIC: &str = "/gripper/finger_position_controller/commands";
-const MOCK_PLUGIN: &str = "mock_components/GenericSystem";
-const UR_PLUGIN: &str = "ur_robot_driver/URPositionHardwareInterface";
-const HOLD_TIMEOUT: Duration = Duration::from_secs(1);
-const HOLD_SETTLE: Duration = Duration::from_millis(100);
-const HOLD_TOLERANCE: f64 = 0.02;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Mode {
@@ -75,11 +66,8 @@ pub struct Ros {
     speed_scaling: Latest<f64>,
     gripper_hardware: Arc<Mutex<Option<GripperHardware>>>,
     cameras: [Latest<Frame>; 3],
-    arm_matches: Arc<Mutex<bool>>,
-    gripper_matches: Arc<Mutex<bool>>,
-    program_running: Arc<Mutex<bool>>,
-    robot_running: Arc<Mutex<bool>>,
-    safety_mode_ready: Arc<Mutex<bool>>,
+    mock_arm: Arc<Mutex<bool>>,
+    mock_gripper: Arc<Mutex<bool>>,
     controller_active: Arc<Mutex<bool>>,
     finger_active: Arc<Mutex<bool>>,
     reference: Latest<Joints>,
@@ -112,9 +100,6 @@ struct Subscriptions {
     _active: Subscription<ControllerManagerActivity>,
     _finger_active: Subscription<ControllerManagerActivity>,
     _reference: Subscription<JointTrajectoryControllerState>,
-    _program_running: Subscription<Bool>,
-    _robot_mode: Subscription<RobotMode>,
-    _safety_mode: Subscription<SafetyMode>,
 }
 
 impl Ros {
@@ -163,21 +148,16 @@ impl Ros {
             move |msg: Float64| store(&speed_scaling, msg.data)
         })?;
 
-        let gripper_matches = Arc::new(Mutex::new(false));
+        let mock_gripper = Arc::new(Mutex::new(false));
         let gripper_hardware: Arc<Mutex<Option<GripperHardware>>> = Arc::default();
         // `robot_state_publisher` publishes the description once, transient local.
         let gripper_description_subscription =
             node.create_subscription(GRIPPER_DESCRIPTION_TOPIC.transient_local().keep_last(1), {
                 let gripper_hardware = Arc::clone(&gripper_hardware);
                 let log = Arc::clone(&log);
-                let gripper_matches = Arc::clone(&gripper_matches);
+                let mock_gripper = Arc::clone(&mock_gripper);
                 move |msg: StringMsg| {
-                    let plugin = if mode == Mode::Real {
-                        ROBOTIQ_PLUGIN
-                    } else {
-                        MOCK_PLUGIN
-                    };
-                    *gripper_matches.lock() = matches_hardware(&msg.data, plugin);
+                    *mock_gripper.lock() = only_mock_hardware(&msg.data);
                     match GripperHardware::from_description(&msg.data) {
                         Ok(hardware) => *gripper_hardware.lock() = Some(hardware),
                         Err(error) => log.push(error.to_string()),
@@ -185,50 +165,12 @@ impl Ros {
                 }
             })?;
 
-        let arm_matches = Arc::new(Mutex::new(false));
+        let mock_arm = Arc::new(Mutex::new(false));
         let arm_description =
             node.create_subscription("/robot_description".transient_local().keep_last(1), {
-                let arm_matches = Arc::clone(&arm_matches);
-                let plugin = if mode == Mode::Real {
-                    UR_PLUGIN
-                } else {
-                    MOCK_PLUGIN
-                };
-                move |msg: StringMsg| *arm_matches.lock() = matches_hardware(&msg.data, plugin)
+                let mock = Arc::clone(&mock_arm);
+                move |msg: StringMsg| *mock.lock() = only_mock_hardware(&msg.data)
             })?;
-        // UR publishes these status messages on change, with transient-local durability.
-        let program_running = Arc::new(Mutex::new(false));
-        let program_subscription = node.create_subscription(
-            "/io_and_status_controller/robot_program_running"
-                .transient_local()
-                .keep_last(1),
-            {
-                let status = Arc::clone(&program_running);
-                move |msg: Bool| *status.lock() = msg.data
-            },
-        )?;
-        let robot_running = Arc::new(Mutex::new(false));
-        let robot_mode_subscription = node.create_subscription(
-            "/io_and_status_controller/robot_mode"
-                .transient_local()
-                .keep_last(1),
-            {
-                let status = Arc::clone(&robot_running);
-                move |msg: RobotMode| *status.lock() = msg.mode == RobotMode::RUNNING
-            },
-        )?;
-        let safety_mode_ready = Arc::new(Mutex::new(false));
-        let safety_mode_subscription = node.create_subscription(
-            "/io_and_status_controller/safety_mode"
-                .transient_local()
-                .keep_last(1),
-            {
-                let status = Arc::clone(&safety_mode_ready);
-                move |msg: SafetyMode| {
-                    *status.lock() = matches!(msg.mode, SafetyMode::NORMAL | SafetyMode::REDUCED);
-                }
-            },
-        )?;
         let controller_active = Arc::new(Mutex::new(false));
         let finger_active = Arc::new(Mutex::new(false));
         let activity = |topic: &'static str, name: &'static str, state: Arc<Mutex<bool>>| {
@@ -312,11 +254,8 @@ impl Ros {
             speed_scaling,
             gripper_hardware,
             cameras,
-            arm_matches,
-            gripper_matches,
-            program_running,
-            robot_running,
-            safety_mode_ready,
+            mock_arm,
+            mock_gripper,
             controller_active,
             finger_active,
             reference,
@@ -332,9 +271,6 @@ impl Ros {
                 _active: active,
                 _finger_active: finger_status,
                 _reference: ref_subscription,
-                _program_running: program_subscription,
-                _robot_mode: robot_mode_subscription,
-                _safety_mode: safety_mode_subscription,
             },
             _node: node,
             _executor_thread: executor_thread,
@@ -409,18 +345,21 @@ impl Ros {
     }
 
     fn isolated_arm(&self) -> bool {
-        *self.arm_matches.lock() && matches!(self.trajectory.get_subscription_count(), Ok(1))
+        *self.mock_arm.lock() && matches!(self.trajectory.get_subscription_count(), Ok(1))
     }
 
     pub fn controller_issue(&self) -> Option<&'static str> {
-        if !*self.arm_matches.lock() {
-            return Some("arm description missing or hardware does not match selected mode");
+        if self.mode == Mode::Real {
+            return None;
+        }
+        if !*self.mock_arm.lock() {
+            return Some("arm description missing or hardware is not mock");
         }
         if !*self.controller_active.lock() {
             return Some("joint_trajectory_controller is inactive or missing");
         }
         if !matches!(self.trajectory.get_subscription_count(), Ok(1)) {
-            return Some("arm command topic requires exactly one controller subscriber");
+            return Some("arm command topic requires exactly one mock controller subscriber");
         }
         if !self
             .reference
@@ -430,31 +369,21 @@ impl Ros {
         {
             return Some("controller reference feedback is missing or stale");
         }
-        if self.mode == Mode::Real {
-            if !*self.robot_running.lock() || !*self.program_running.lock() {
-                return Some("UR robot or External Control program is not running");
-            }
-            if !*self.safety_mode_ready.lock() {
-                return Some("UR safety mode is unavailable or does not allow motion");
-            }
-            if self.speed_scaling().is_some_and(|sample| {
-                sample.at.elapsed() <= Duration::from_secs(1) && sample.value <= 0.0
-            }) {
-                return Some("UR speed scaling is zero");
-            }
-        }
         None
     }
 
     pub fn gripper_issue(&self) -> Option<&'static str> {
-        if !*self.gripper_matches.lock() {
-            return Some("gripper description missing or hardware does not match selected mode");
+        if self.mode == Mode::Real {
+            return None;
+        }
+        if !*self.mock_gripper.lock() {
+            return Some("gripper description missing or hardware is not mock");
         }
         if !*self.finger_active.lock() {
             return Some("finger_position_controller is inactive or missing");
         }
         if !matches!(self.finger_command.get_subscription_count(), Ok(1)) {
-            return Some("gripper command topic requires exactly one controller subscriber");
+            return Some("gripper command topic requires exactly one mock controller subscriber");
         }
         None
     }
@@ -472,14 +401,6 @@ impl Ros {
 
     /// One point per entry of `positions`, `segment` apart, starting on receipt.
     pub fn send_trajectory(&self, positions: &[Joints], segment: Duration) -> Result<()> {
-        if self.mode == Mode::Real {
-            if let Some(issue) = self.controller_issue() {
-                bail!("{issue}");
-            }
-            if !positions.iter().all(ur12e_target_in_range) {
-                bail!("trajectory target exceeds the UR12e joint range");
-            }
-        }
         let points = positions
             .iter()
             .zip(1..)
@@ -492,58 +413,35 @@ impl Ros {
         self.publish_trajectory(points)
     }
 
-    /// Makes the arm hold `position` at once, dropping the trajectory it was following.
-    pub fn hold(&self, position: &Joints) -> Result<()> {
-        let target = if self.mode == Mode::Real {
-            self.arm()
-                .filter(Received::is_fresh)
-                .ok_or_else(|| eyre!("no fresh measured position for a hold command"))?
-                .value
-                .position
-        } else {
-            *position
-        };
-        let sent = Instant::now();
-        self.publish_trajectory(vec![JointTrajectoryPoint {
-            positions: target.to_vec(),
-            ..Default::default()
-        }])?;
-        if self.mode == Mode::Real {
-            self.confirm_hold(&target, sent)?;
-        }
-        Ok(())
+    /// Like `send_trajectory`, for an episode's steps: each point also carries the velocity of the
+    /// step ending at it, so the controller runs one message into the next instead of slowing to a
+    /// stop at the end of every step.
+    pub fn send_steps(&self, from: &Joints, positions: &[Joints], segment: Duration) -> Result<()> {
+        let points = positions
+            .iter()
+            .zip(step_velocities(from, positions, segment))
+            .zip(1..)
+            .map(|((position, velocity), i)| JointTrajectoryPoint {
+                positions: position.to_vec(),
+                velocities: velocity.to_vec(),
+                time_from_start: ros_duration(segment * i),
+                ..Default::default()
+            })
+            .collect();
+        self.publish_trajectory(points)
     }
 
-    fn confirm_hold(&self, target: &Joints, sent: Instant) -> Result<()> {
-        let mut stable_since = None;
-        while sent.elapsed() < HOLD_TIMEOUT {
-            let reference_matches = self
-                .reference()
-                .is_some_and(|sample| sample.at > sent && near(&sample.value, target));
-            let arm_still = self.arm().filter(Received::is_fresh).is_some_and(|sample| {
-                sample.at > sent
-                    && near(&sample.value.position, target)
-                    && sample
-                        .value
-                        .velocity
-                        .iter()
-                        .all(|v| v.abs() <= HOLD_TOLERANCE)
-            });
-            if reference_matches && arm_still {
-                if stable_since.get_or_insert_with(Instant::now).elapsed() >= HOLD_SETTLE {
-                    return Ok(());
-                }
-            } else {
-                stable_since = None;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        bail!("could not confirm the arm stopped at the hold target")
+    /// Makes the arm hold `position` at once, dropping the trajectory it was following.
+    pub fn hold(&self, position: &Joints) -> Result<()> {
+        self.publish_trajectory(vec![JointTrajectoryPoint {
+            positions: position.to_vec(),
+            ..Default::default()
+        }])
     }
 
     pub fn command_finger(&self, position: f64) -> Result<()> {
-        if let Some(issue) = self.gripper_issue() {
-            bail!("{issue}");
+        if !self.gripper_ready() {
+            bail!("mock gripper controller or isolated subscriber missing");
         }
         self.finger_command.publish(Float64MultiArray {
             data: vec![position],
@@ -553,8 +451,8 @@ impl Ros {
     }
 
     fn publish_trajectory(&self, points: Vec<JointTrajectoryPoint>) -> Result<()> {
-        if !self.isolated_arm() {
-            bail!("arm hardware does not match selected mode or command topic is not isolated");
+        if self.mode == Mode::Mock && !self.isolated_arm() {
+            bail!("arm is not verified mock hardware with one command subscriber");
         }
         self.trajectory.publish(JointTrajectory {
             joint_names: ARM_JOINTS.map(str::to_owned).to_vec(),
@@ -578,26 +476,7 @@ fn camera_health(frames: &[Latest<Frame>; 3]) -> [bool; 3] {
         .map(|frame| frame.lock().as_ref().is_some_and(fresh_camera_frame))
 }
 
-fn near(measured: &Joints, target: &Joints) -> bool {
-    measured
-        .iter()
-        .zip(target)
-        .all(|(q, target)| (q - target).abs() <= HOLD_TOLERANCE)
-}
-
-fn ur12e_target_in_range(target: &Joints) -> bool {
-    use std::f64::consts::TAU;
-    target.iter().enumerate().all(|(joint, q)| {
-        let limit = if joint == 2 {
-            160.0_f64.to_radians()
-        } else {
-            TAU
-        };
-        q.abs() <= limit
-    })
-}
-
-fn matches_hardware(xml: &str, expected: &str) -> bool {
+fn only_mock_hardware(xml: &str) -> bool {
     let Ok(doc) = roxmltree::Document::parse(xml) else {
         return false;
     };
@@ -611,7 +490,7 @@ fn matches_hardware(xml: &str, expected: &str) -> bool {
                 .find(|n| n.has_tag_name("hardware"))
                 .and_then(|h| h.children().find(|n| n.has_tag_name("plugin")))
                 .and_then(|p| p.text())
-                .is_some_and(|p| p.trim() == expected)
+                .is_some_and(|p| p.trim() == "mock_components/GenericSystem")
         })
 }
 
@@ -672,6 +551,19 @@ fn ros_duration(duration: Duration) -> RosDuration {
     }
 }
 
+fn step_velocities(from: &Joints, positions: &[Joints], segment: Duration) -> Vec<Joints> {
+    let seconds = segment.as_secs_f64();
+    positions
+        .iter()
+        .scan(*from, |previous, position| {
+            let velocity =
+                std::array::from_fn(|joint| (position[joint] - previous[joint]) / seconds);
+            *previous = *position;
+            Some(velocity)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,47 +571,19 @@ mod tests {
     use std::assert_matches;
     use test_case::test_case;
 
+    #[test_case(&[[0.025; 6]] => vec![[0.5; 6]]; "single step")]
+    #[test_case(&[[0.025; 6], [0.05; 6]] => vec![[0.5; 6], [0.5; 6]]; "timed chunk")]
+    fn velocities_per_step(positions: &[Joints]) -> Vec<Joints> {
+        step_velocities(&[0.0; 6], positions, Duration::from_millis(50))
+    }
+
     #[test_case("<broken" => false)]
     #[test_case("<robot/>" => false)]
     #[test_case("<robot><ros2_control type='system'><hardware><plugin>custom/Unknown</plugin></hardware></ros2_control></robot>" => false)]
     #[test_case("<robot><ros2_control type='system'><hardware><plugin>mock_components/GenericSystem</plugin></hardware></ros2_control></robot>" => true)]
     #[test_case("<robot><ros2_control type='system'><hardware><plugin>mock_components/GenericSystem</plugin></hardware></ros2_control><ros2_control type='system'><hardware><plugin>ur_robot_driver/URPositionHardwareInterface</plugin></hardware></ros2_control></robot>" => false)]
     fn verify_mock_identity(xml: &str) -> bool {
-        matches_hardware(xml, MOCK_PLUGIN)
-    }
-
-    #[test]
-    fn real_arm_rejects_mock_and_mixed_descriptions() {
-        let arm = |plugin| {
-            format!(
-                "<ros2_control type='system'><hardware><plugin>{plugin}</plugin></hardware></ros2_control>"
-            )
-        };
-        let real = arm(UR_PLUGIN);
-        let mock = arm(MOCK_PLUGIN);
-        assert!(matches_hardware(
-            &format!("<robot>{real}</robot>"),
-            UR_PLUGIN
-        ));
-        assert!(!matches_hardware(
-            &format!("<robot>{mock}</robot>"),
-            UR_PLUGIN
-        ));
-        assert!(!matches_hardware(
-            &format!("<robot>{real}{mock}</robot>"),
-            UR_PLUGIN
-        ));
-    }
-
-    #[test]
-    fn real_targets_reject_out_of_range_or_nonfinite_positions() {
-        let mut target = crate::worker::START_POSE;
-        assert!(ur12e_target_in_range(&target));
-        target[2] = 161.0_f64.to_radians();
-        assert!(!ur12e_target_in_range(&target));
-        target[2] = 0.0;
-        target[5] = f64::NAN;
-        assert!(!ur12e_target_in_range(&target));
+        only_mock_hardware(xml)
     }
 
     #[test_case(0)]

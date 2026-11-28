@@ -33,8 +33,8 @@ The runner rejects an invalid reply before applying any element of the chunk.
 
 Reality Check's scoring runner and engine own clamping, joint target bounds,
 and tool and elbow speed scaling. Send in-range values for a policy that runs
-on both paths. The Whistle mock applies accepted deltas through its ROS
-controllers and stops the episode on an invalid reply.
+on both paths. Whistle sends each accepted chunk as one timed ROS trajectory
+and stops the episode on an invalid reply.
 
 Each element consumes one 50 ms action step, up to 1,200 steps. Cumulative
 `/act` transport is limited to 90 seconds, with a connection timeout at most

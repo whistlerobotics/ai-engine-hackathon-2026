@@ -1,6 +1,6 @@
 use crate::{
     policy::Policy,
-    ros::{Mode, Received, Ros},
+    ros::{Received, Ros},
     task::Task,
 };
 use color_eyre::{
@@ -21,9 +21,8 @@ use std::{
 
 pub const STEPS: u32 = 1200;
 pub const BUDGET: Duration = Duration::from_secs(90);
-const REAL_WALL_LIMIT: Duration = Duration::from_secs(150);
 pub const MAX_TRACKING_ERROR: f64 = 0.25;
-/// How often a sleep checks for Ctrl-C and the budget.
+/// How often a wait checks for cancellation and lost feedback.
 const SLEEP_SLICE: Duration = Duration::from_millis(5);
 pub enum Outcome {
     Completed,
@@ -159,23 +158,39 @@ impl<'a> Episode<'a> {
 
     fn step_loop(&mut self) -> Result<(), Stop> {
         self.q_cmd = self.measured_arm()?;
+        let mut next_start = Instant::now() + STEP;
         while self.counts.steps < STEPS {
             let actions = self.act()?;
+            let now = Instant::now();
+            if now > next_start {
+                self.counts.late += 1;
+            }
+            let start = now.max(next_start);
             let remaining = (STEPS - self.counts.steps) as usize;
-            for action in actions.into_iter().take(remaining) {
-                self.check()?;
-                let issued = Instant::now();
-                let target = std::array::from_fn(|joint| self.q_cmd[joint] + action.delta[joint]);
-                self.ros.send_trajectory(&[target], STEP)?;
-                self.commanded = true;
-                self.q_cmd = target;
+            let actions = &actions[..actions.len().min(remaining)];
+            let mut target = self.q_cmd;
+            let mut targets = Vec::with_capacity(actions.len());
+            for action in actions {
+                for (joint, delta) in target.iter_mut().zip(action.delta) {
+                    *joint += delta;
+                }
+                targets.push(target);
+            }
+
+            for (index, action) in (0_u32..).zip(actions) {
+                self.sleep_until(start + STEP * index)?;
+                if index == 0 {
+                    self.ros.send_steps(&self.q_cmd, &targets, STEP)?;
+                    self.commanded = true;
+                    self.q_cmd = target;
+                }
                 self.ros.command_finger(gripper::finger(action.gripper))?;
                 self.counts.steps += 1;
                 self.publish(|p| p.counts = self.counts);
-                self.sleep_until(issued + STEP)?;
             }
+            next_start = start + STEP * u32::try_from(actions.len()).unwrap_or(u32::MAX);
         }
-        Ok(())
+        self.sleep_until(next_start)
     }
 
     fn act(&mut self) -> Result<Vec<Action>, Stop> {
@@ -208,9 +223,6 @@ impl<'a> Episode<'a> {
         });
         let duration = sent.elapsed();
         self.counts.http += duration;
-        if duration > STEP {
-            self.counts.late += 1;
-        }
         self.publish(|p| {
             p.latencies.push(duration);
             p.counts = self.counts;
@@ -225,11 +237,7 @@ impl<'a> Episode<'a> {
 
     fn stop(&self) -> Result<()> {
         if self.commanded {
-            let position = self
-                .ros
-                .arm()
-                .filter(Received::is_fresh)
-                .map_or(self.q_cmd, |arm| arm.value.position);
+            let position = self.ros.arm().map_or(self.q_cmd, |arm| arm.value.position);
             self.ros.hold(&position)?;
         }
         Ok(())
@@ -287,9 +295,6 @@ impl<'a> Episode<'a> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Stop::Aborted);
         }
-        if self.ros.mode() == Mode::Real && self.started.elapsed() >= REAL_WALL_LIMIT {
-            return Err(eyre!("real-arm wall time limit reached").into());
-        }
         if let Some(issue) = self
             .ros
             .controller_issue()
@@ -298,7 +303,10 @@ impl<'a> Episode<'a> {
             return Err(eyre!("{issue}").into());
         }
         self.ros.check_cameras()?;
-        self.observe()?;
+        self.measured_arm()?;
+        if !self.ros.finger().is_some_and(|sample| sample.is_fresh()) {
+            return Err(eyre!("the gripper's joint state is stale").into());
+        }
         Ok(())
     }
 
