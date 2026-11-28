@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timezone
+from http.client import HTTPConnection, HTTPException
 import json
 import math
 import os
@@ -134,6 +135,7 @@ class Demo:
         self.started = None
         self.deadline = None
         self.bag_topics = set()
+        self.policy_port = None
         # Imported data is already captured. In preview, simulate the operator gate.
         self.operator_ready = args.input is not None
         self.reset()
@@ -319,16 +321,12 @@ class Demo:
             return
         if (self.draft / "no_human").exists():
             shutil.rmtree(self.draft / "no_human")
-        if self.args.observe_replay:
-            self.observed_at = self.finished_at = None
-            self.start_bag()
-            return
         replay_type = runpy.run_path(str(ROOT / "test-policy.py"))["Replay"]
         recording = self.draft / "human.json"
         playback = replay_type(recording)
         self.replay_steps = len(playback.deltas)
         if not 1 <= self.replay_steps <= 1200:
-            raise ValueError(f"Mock replay needs 1–1,200 steps; this take expands to {self.replay_steps}.")
+            raise ValueError(f"Replay needs 1–1,200 steps; this take expands to {self.replay_steps}.")
         write_json(
             self.draft / "replay-plan.json",
             {
@@ -338,18 +336,24 @@ class Demo:
         )
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
-        self.bag_topics.clear()
+            self.policy_port = sock.getsockname()[1]
         self.start_job(
             "policy",
-            ["mise", "run", "test-policy", "--", "--port", str(port), "--replay", str(recording)],
+            [
+                "mise", "run", "test-policy", "--", "--bind", "127.0.0.1",
+                "--port", str(self.policy_port), "--replay", str(recording),
+            ],
         )
+        if self.args.observe_replay:
+            self.observed_at = self.finished_at = None
+            self.start_bag()
+            return
         self.start_job(
             "runner",
             [
                 "mise", "run", "policy-runner", "--",
                 "--mode", "mock", "--task", self.task, "--task-pack", str(self.args.task_pack),
-                "--policy", f"http://127.0.0.1:{port}", "--mock-replay-stdio",
+                "--policy", self.replay_policy_url(), "--mock-replay-stdio",
                 "--mock-replay-steps", str(self.replay_steps),
                 "--mock-replay-start", *map(str, playback.start),
             ],
@@ -357,6 +361,27 @@ class Demo:
         )
         self.begin("runner-start", 600)
         self.status = "Starting the isolated mock runner…"
+
+    def replay_policy_url(self):
+        return f"http://127.0.0.1:{self.policy_port}"
+
+    def replay_policy_ready(self):
+        connection = HTTPConnection("127.0.0.1", self.policy_port, timeout=0.15)
+        try:
+            connection.request("GET", "/readyz")
+            response = connection.getresponse()
+            if response.status != 200:
+                return False
+            status = json.load(response)
+            return (
+                status.get("ready") is True
+                and status.get("contract") == "v0"
+                and status.get("schema_version") == 3
+            )
+        except (OSError, ValueError, HTTPException):
+            return False
+        finally:
+            connection.close()
 
     def start_bag(self):
         self.stage = "replay"
@@ -403,14 +428,10 @@ class Demo:
             topic = re.search(r"Subscribed to topic ['\"]([^'\"]+)", line)
             if topic:
                 self.bag_topics.add(topic.group(1))
-            if self.required_topics() <= self.bag_topics:
-                if self.args.observe_replay:
-                    self.begin("observing")
-                    self.status = "Ready. Press B when the cell operator starts the existing replay."
-                else:
-                    self.jobs["runner"].send("run")
-                    self.begin("replaying", 100)
-                    self.status = "Replaying and capturing mock joint and controller states…"
+            if self.required_topics() <= self.bag_topics and not self.args.observe_replay:
+                self.jobs["runner"].send("run")
+                self.begin("replaying", 100)
+                self.status = "Replaying and capturing mock joint and controller states…"
 
     def finish_replay(self):
         self.begin(None)
@@ -461,8 +482,19 @@ class Demo:
                 self.finish_replay()
                 return
             raise RuntimeError(f"{name.title()} exited with status {finished}. See logs/{name}.log.")
+        if self.operation == "bag-start" and self.args.observe_replay:
+            if self.required_topics() <= self.bag_topics and self.replay_policy_ready():
+                self.begin("observing")
+                self.status = "Replay source and capture ready. Mark replay start with B."
+                self.detail = [
+                    f"Cell operator's policy source: {self.replay_policy_url()}",
+                    f"Replay: {self.episode_id} · {self.replay_steps} action steps",
+                ]
+                return
         if self.deadline is not None and monotonic() >= self.deadline:
             pending = sorted(self.required_topics() - self.bag_topics) if self.operation == "bag-start" else []
+            if self.operation == "bag-start" and self.args.observe_replay and not pending:
+                pending = ["replay policy readiness"]
             suffix = f": {', '.join(pending)}" if pending else ""
             raise RuntimeError(f"Timed out during {self.operation}{suffix}.")
 
@@ -530,6 +562,8 @@ class Demo:
                 "marked_start": self.observed_at,
                 "marked_complete": self.finished_at,
                 "camera_capture": True,
+                "policy_steps": self.replay_steps,
+                "planned_actions": "replay-plan.json",
             }
         else:
             replay = {

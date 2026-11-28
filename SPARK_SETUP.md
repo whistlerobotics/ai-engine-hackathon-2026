@@ -128,12 +128,13 @@ button is held, and ends when it is released. The default source is the named
 right camera at 640×360. For the original 640×480 camera feed, pass
 `--camera-topic /camera/color/image_raw/compressed`.
 
-**R** arms the existing three-camera bag recorder for the No human take. Wait
-for the TUI to report readiness before the cell operator runs the replay
-through the existing policy TUI. Mark the replay start with **B** and
-completion with **F**. These keys only mark the bag interval. The tool checks
-that the bag has samples from all three cameras and the required robot-state
-topics before enabling Save.
+**R** starts Whistle's existing replay policy with the staged Human take and
+arms the three-camera bag recorder. When both are ready, the TUI shows the
+loopback policy URL for the cell operator's existing policy TUI in the same
+devcontainer. The operator handles homing and replay there. Mark the start
+with **B** and, once the operator has finished, end capture with **F**.
+Before enabling Save, the tool checks that the bag contains samples from all
+three cameras and the required robot-state topics.
 
 Both takes keep Whistle's episode ID, for example `ep_20261128_123456`.
 They are stored under `recording/<task_id>/<episode_id>/` as `human.json` and
